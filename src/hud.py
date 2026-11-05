@@ -654,6 +654,10 @@ class HudController(NSObject):
         neither a dropdown's worth of rows nor its candidates, which is what removes the dead
         space a fixed-height panel left in the middle.
         """
+        if self._collapsed:
+            # 收起时只保留标题/状态条：候选再到达也不能把面板撑开，
+            # 否则详情区（消息/判断）保持隐藏而候选可见，顶部就是一块空白。
+            return
         message_h, document_h, overflow = self._message_metrics()
         message_delta = message_h - 26  # sender row now precedes the body
         self._message_toggle.setHidden_(not overflow)
@@ -1164,7 +1168,7 @@ class HudController(NSObject):
                     r["text"].setStringValue_(it["text"])
                     self._set_progress(slot, row, it["prob"])
                     for c in self._row_controls(slot, row):
-                        c.setHidden_(not self._slot_active(slot))
+                        c.setHidden_(self._collapsed or not self._slot_active(slot))
                     self.cand_texts[slot * styles.PER_TONE + row] = it["text"]
         for slot in range(styles.MAX_SLOTS):
             for row in range(styles.PER_TONE):
@@ -1176,7 +1180,8 @@ class HudController(NSObject):
                     for c in self._row_controls(slot, row):
                         c.setHidden_(True)
                     self.cand_texts[slot * styles.PER_TONE + row] = None
-        self._relayout()
+        if not self._collapsed:
+            self._relayout()
 
     @objc.python_method
     def _clear_candidates(self):
@@ -2580,6 +2585,8 @@ class HudController(NSObject):
         # a new message landed but we are not analysing yet (burst in progress):
         # keep the previous verdict visible, just badge it
         text, sender, prev = payload
+        if self._collapsed:
+            self._set_collapsed(False)      # 新消息必须看得见，收起只是临时腾地方
         self._show()
         self._render("status", "有新消息 · 等消息停稳…", PALETTE["muted"])
         self._render("message", text, PALETTE["muted"])   # grey: not analysed yet
@@ -2587,6 +2594,8 @@ class HudController(NSObject):
 
     def applyPending_(self, payload):
         text, sender, prev = payload
+        if self._collapsed:
+            self._set_collapsed(False)
         self._show()
         self._render("status", "分析中…", PALETTE["muted"])
         self._render("message", text, PALETTE["text"])    # inked: this is the one
@@ -2597,6 +2606,8 @@ class HudController(NSObject):
 
     def applyJudgment_(self, payload):
         v, sender, prev = payload
+        if self._collapsed:
+            self._set_collapsed(False)      # 预判终点直达这里，同样要展开
         self._show()
         # kept so a 话术 change can re-rank the new candidates against the same verdict
         self._last_intent = v.get("intent", "")
