@@ -667,10 +667,17 @@ class HudController(NSObject):
 
     @objc.python_method
     def _visible_rows(self, slot: int) -> int:
-        """紧凑模式：每组默认只显示前 COMPACT_ROWS 条，点「更多」看全部。"""
-        if slot in getattr(self, "_expanded_slots", set()):
-            return styles.PER_TONE
-        return max(1, min(COMPACT_ROWS, styles.PER_TONE))
+        """紧凑模式：每组默认只显示前 COMPACT_ROWS 条，点「更多」看全部。
+
+        上限取「已填候选数」，否则没填满的行也会占位，组框就是一片空白。
+        """
+        cap = styles.PER_TONE if slot in getattr(self, "_expanded_slots", set()) \
+            else min(COMPACT_ROWS, styles.PER_TONE)
+        base = slot * styles.PER_TONE
+        filled = sum(1 for row in range(styles.PER_TONE)
+                     if 0 <= base + row < len(self.cand_texts)
+                     and self.cand_texts[base + row] is not None)
+        return max(1, min(cap, filled)) if filled else 1
 
     def toggleSlotMore_(self, sender):
         slot = sender.tag()
@@ -731,10 +738,15 @@ class HudController(NSObject):
             if active:
                 dy += TONE_DD_GAP
             visible_rows = self._visible_rows(slot)
+            base_tag = slot * styles.PER_TONE
             for row in range(styles.PER_TONE):
                 r = self._rows[slot][row]
                 controls = self._row_controls(slot, row)
-                if active and row < visible_rows:
+                has = (0 <= base_tag + row < len(self.cand_texts)
+                       and self.cand_texts[base_tag + row] is not None)
+                if active and row < visible_rows and has:
+                    for c in controls:
+                        c.setHidden_(False)
                     # The candidate decides its own height. Short replies keep the compact
                     # minimum; longer localized text grows without truncation.
                     text_h = self._candidate_text_height(r["text"])
