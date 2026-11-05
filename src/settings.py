@@ -37,7 +37,7 @@ class SettingsController(NSObject):
             A.NSWindowStyleMaskTitled | A.NSWindowStyleMaskClosable,
             A.NSBackingStoreBuffered, False)
         self.window.setAppearance_(A.NSAppearance.appearanceNamed_(A.NSAppearanceNameAqua))
-        self.window.setTitle_("设置 · 模型与会话上下文")
+        self.window.setTitle_("jev-jarvis · 控制台与设置")
         self.window.setOpaque_(False)
         self.window.setBackgroundColor_(A.NSColor.clearColor())
         self.window.setHasShadow_(True)
@@ -55,7 +55,7 @@ class SettingsController(NSObject):
         view.layer().setBackgroundColor_(PALETTE["bg"].CGColor())
         self.window.setContentView_(view)
 
-        title = self.label(view, "模型与会话设置", 24, 598, 710, 28, 22)
+        title = self.label(view, "控制台与设置", 24, 598, 710, 28, 22)
         title.setFont_(A.NSFont.boldSystemFontOfSize_(22))
         title.setTextColor_(PALETTE["text"])
         self.label(view, "编辑文件：" + str(self.path).replace(str(Path.home()), "~"),
@@ -76,6 +76,7 @@ class SettingsController(NSObject):
         self.tabs = A.NSTabView.alloc().initWithFrame_(NSMakeRect(24, 184, 712, 326))
         if hasattr(self.tabs, "setDrawsBackground_"):
             self.tabs.setDrawsBackground_(False)
+        self.build_console_tab()
         titles = ("判断 · Jev", "生成 · OpenAI 兼容", "生成 · Anthropic 兼容")
         for index, (prefix, title) in enumerate(zip(config.PREFIXES, titles)):
             item = A.NSTabViewItem.alloc().initWithIdentifier_(prefix)
@@ -168,7 +169,121 @@ class SettingsController(NSObject):
         self.controls.append(self.save_button)
         self.window.center()
         self.refresh_contexts()
+        self.refresh_console_tab()
         return self
+
+    @objc.python_method
+    def build_console_tab(self):
+        """「控制台」标签：状态、场景、行为开关、常用动作（与设置同窗，不再单开窗口）。"""
+        item = A.NSTabViewItem.alloc().initWithIdentifier_("CONSOLE")
+        item.setLabel_("控制台")
+        panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 300))
+        self.console_fields = {}
+
+        card = ui_style.make_surface(12, PALETTE["surface"], PALETTE["edge"])
+        card.setFrame_(NSMakeRect(12, 168, 666, 120))
+        panel.addSubview_(card)
+        left = (("app", 92), ("scene", 68), ("panel", 44), ("status", 16))
+        for key, y in left:
+            self.console_fields[key] = self.label(
+                card, "", 16, y, 360, 20, 12,
+                PALETTE["muted"] if key == "status" else PALETTE["text"])
+        right = (("flag0", 92), ("flag1", 68), ("flag2", 44), ("flag3", 20))
+        for key, y in right:
+            self.console_fields[key] = self.label(card, "", 400, y, 240, 18, 11,
+                                                  PALETTE["muted"])
+
+        self.label(panel, "场景", 16, 142, 40, 20, 11, PALETTE["muted"])
+        self.console_scene = A.NSSegmentedControl.alloc().initWithFrame_(
+            NSMakeRect(60, 138, 300, 26))
+        self.console_scene.setSegmentCount_(len(__import__("modes").MODES))
+        for index, (_key, mode) in enumerate(__import__("modes").MODES.items()):
+            self.console_scene.setLabel_forSegment_(mode["name"], index)
+            self.console_scene.setWidth_forSegment_(140, index)
+        self.console_scene.setTarget_(self)
+        self.console_scene.setAction_("consoleSceneChanged:")
+        panel.addSubview_(self.console_scene)
+
+        self.console_switches = {}
+        titles = (("autoshow", "有新消息时自动显示"), ("boxes", "YOLO 检测框"),
+                  ("pinned", "固定在最前面"), ("paused", "暂停读屏"))
+        for index, (key, title) in enumerate(titles):
+            button = A.NSButton.alloc().initWithFrame_(
+                NSMakeRect(60 + (index % 2) * 300, 112 - (index // 2) * 26, 280, 22))
+            button.setButtonType_(A.NSButtonTypeSwitch)
+            button.setTitle_(title)
+            button.setFont_(A.NSFont.systemFontOfSize_(12))
+            button.setTarget_(self)
+            button.setAction_("consoleToggle:")
+            button.setTag_(index)
+            panel.addSubview_(button)
+            self.console_switches[key] = button
+
+        actions = (("显示 / 收起面板", "collapsePanel:", 16),
+                   ("校准区域…", "calibrateMessages:", 164),
+                   ("立即分析", "reanalyze:", 292),
+                   ("展开全部候选", "toggleAllSlots:", 420),
+                   ("打开会话记录…", "openContexts:", 548))
+        for title, selector, x in actions:
+            button = self.button(panel, title, "consoleAction:", x, 34, 118)
+            button.setIdentifier_(selector)
+            button.setTag_(0)
+        item.setView_(panel)
+        self.tabs.addTabViewItem_(item)
+        self._console_timer = A.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0, self, "consoleTick:", None, True)
+
+    def consoleTick_(self, timer):
+        if self.window is not None and self.window.isVisible():
+            self.refresh_console_tab()
+
+    def consoleSceneChanged_(self, sender):
+        import modes
+        keys = list(modes.MODES)
+        index = sender.selectedSegment()
+        if 0 <= index < len(keys):
+            self.hud.apply_scene(keys[index])
+        self.refresh_console_tab()
+
+    def consoleToggle_(self, sender):
+        handler = {0: "toggleAutoshow_", 1: "toggleBoxes_",
+                   2: "toggleAlwaysOnTop_", 3: "togglePause_"}[sender.tag()]
+        getattr(self.hud, handler)(None)
+        self.refresh_console_tab()
+
+    def consoleAction_(self, sender):
+        selector = str(sender.identifier())
+        if selector == "openContexts:":
+            self.tabs.selectTabViewItemWithIdentifier_("CONTEXT")
+            return
+        getattr(self.hud, selector)(None)
+        self.refresh_console_tab()
+
+    @objc.python_method
+    def refresh_console_tab(self):
+        if self.hud is None or not hasattr(self, "console_fields"):
+            return
+        import modes
+        state = self.hud.console_state()
+        self.console_fields["app"].setStringValue_(f"当前应用：{state.get('app_name', '—')}")
+        self.console_fields["scene"].setStringValue_(f"场景：{state.get('scene_name', '—')}")
+        self.console_fields["panel"].setStringValue_(
+            "面板：" + ("显示中" if state.get("panel_visible") else "隐藏（菜单栏可开）"))
+        self.console_fields["status"].setStringValue_(f"最近状态：{state.get('status_text', '—')}")
+        self.console_fields["flag0"].setStringValue_(
+            "自动显示：" + ("开" if state.get("autoshow") else "关"))
+        self.console_fields["flag1"].setStringValue_(
+            "检测框：" + ("开" if state.get("boxes") else "关"))
+        self.console_fields["flag2"].setStringValue_(
+            "置顶：" + ("开" if state.get("always_top") else "关"))
+        self.console_fields["flag3"].setStringValue_(
+            "读屏：" + ("已暂停" if state.get("paused") else "运行中"))
+        self.console_scene.setSelectedSegment_(list(modes.MODES).index(modes.active_key()))
+        mapping = {"autoshow": state.get("autoshow"), "boxes": state.get("boxes"),
+                   "pinned": state.get("always_top"), "paused": state.get("paused")}
+        for key, button in self.console_switches.items():
+            button.setState_(A.NSControlStateValueOn if mapping.get(key)
+                             else A.NSControlStateValueOff)
 
     @objc.python_method
     def build_context_tab(self):

@@ -839,8 +839,7 @@ class HudController(NSObject):
             ("YOLO 检测框", "toggleBoxes:", ""),
             ("固定在最前面", "toggleAlwaysOnTop:", ""),
             ("立即重新分析", "reanalyze:", ""),
-            ("打开控制台…", "openConsole:", "0"),
-            ("模型设置…", "openSettings:", ","),
+            ("控制台与设置…", "openSettings:", ","),
             ("校准区域…", "calibrateMessages:", ""),
             ("恢复自动识别区域", "clearCalibration:", ""),
             ("有新消息时自动显示", "toggleAutoshow:", ""),
@@ -929,22 +928,6 @@ class HudController(NSObject):
             "paused": bool(getattr(self, "_paused", False)),
         }
 
-    def openConsole_(self, sender):
-        """菜单/ Dock 打开产品主界面：窗口显示期间切到 Regular（有 Dock 图标）。"""
-        from console_ui import build_console
-        if getattr(self, "console_controller", None) is not None:
-            self.console_controller.show()
-        else:
-            self.console_controller = build_console(self)
-        AppKit.NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
-        AppKit.NSApp.activateIgnoringOtherApps_(True)
-        self.console_controller.show()
-
-    @objc.python_method
-    def on_console_closed(self):
-        """关闭主界面后不退出、也不撤销 Dock 身份：点 Dock 图标可重新打开。"""
-        _log("控制台已关闭 · 应用继续在 Dock 与菜单栏")
-
     @objc.python_method
     def _retire_calibration_results(self):
         self._foreground_epoch += 1
@@ -1032,6 +1015,8 @@ class HudController(NSObject):
 
     def openSettings_(self, sender):
         from settings import SettingsController
+        AppKit.NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
         if getattr(self, "settings_controller", None) and self.settings_controller.window.isVisible():
             self.settings_controller.show()
             return
@@ -3115,7 +3100,7 @@ def main() -> None:
     # 产品形态：Dock 图标沿用 .app 的 AppIcon（从源码跑时也能有像样的图标）
     class _AppDelegate(AppKit.NSObject):
         def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, flag):
-            controller.openConsole_(None)
+            controller.openSettings_(None)
             return True
 
         def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
