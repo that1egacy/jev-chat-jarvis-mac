@@ -139,5 +139,51 @@ class StripLabelTests(unittest.TestCase):
         self.assertIn('Wenfeng', parsed['messages'][0].text)
 
 
+class StripQuoteTests(unittest.TestCase):
+    """引用卡片：标签行 + 引用文字（都是小字号）一起剥离，只留正文。"""
+
+    def _stack(self, lines):
+        """lines: [(text, height)]，同一气泡内从上到下。"""
+        blocks, top = [], 0.20
+        for text, h in lines:
+            blocks.append(block(text, top, 0.50, w=0.18, h=h))
+            top += h + 0.004
+        return blocks
+
+    def test_label_and_quote_stripped_together(self):
+        blocks = self._stack([
+            ('Wenfeng', 0.011),           # 发言人昵称
+            ('明天能来开会吗？', 0.012),   # 引用卡片文字
+            ('可以', 0.018),              # 真正的正文
+        ])
+        parsed = wa.classify_blocks(blocks)
+        self.assertEqual(parsed['messages'][0].text, '可以')
+
+    def test_quote_without_label_still_stripped(self):
+        blocks = self._stack([
+            ('收到，明天见', 0.012),
+            ('好的我改一下方案', 0.018),
+        ])
+        parsed = wa.classify_blocks(blocks)
+        self.assertEqual(parsed['messages'][0].text, '好的我改一下方案')
+
+    def test_small_font_head_with_punctuation_still_stripped(self):
+        # 引用原文以句号结尾很常见；字号才是标签判据，不按标点拦截
+        blocks = self._stack([
+            ('好的。', 0.011),
+            ('那就这样', 0.018),
+        ])
+        parsed = wa.classify_blocks(blocks)
+        self.assertEqual(parsed['messages'][0].text, '那就这样')
+
+    def test_keeps_one_body_line_when_all_small(self):
+        blocks = self._stack([
+            ('短句一', 0.012),
+            ('短句二', 0.012),
+        ])
+        parsed = wa.classify_blocks(blocks)
+        self.assertTrue(parsed['messages'][0].text.strip())
+
+
 if __name__ == '__main__':
     unittest.main()

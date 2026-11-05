@@ -225,27 +225,34 @@ def _merge(rows) -> list[dict]:
 
 
 def _strip_label_line(m: dict) -> None:
-    """去掉气泡首行的「发言人昵称 / 引用块头」。
+    """去掉气泡顶部的「标签块」：发言人昵称行 + 引用卡片文字。
 
-    依据字号：首行明显小于正文行高（<=0.8 倍）、长度 <=16、且不以句末标点结尾，
-    才判定为标签行。只对对方消息生效——自己的气泡不显示发言人。
+    WhatsApp 引用卡片与外层发言人昵称都用**更小的字号**，且都位于气泡正文之前；
+    正文行的字号一致。因此按「行高 <= 正文最大行高 0.8 倍」从顶部连续剥离，
+    最多 4 行，且必须至少保留一行正文，避免把整条消息误删。
+
+    只对对方消息生效——自己的气泡不显示发言人。
     """
     if not STRIP_SENDER or m.get("side") != "them":
         return
     lines = m["text"].split("\n")
     heights = m.get("lh") or []
-    if len(lines) < 2 or len(heights) < 2:
+    if len(lines) < 2 or len(heights) != len(lines):
         return
-    first = lines[0].strip()
-    if not first or len(first) > 16:
+    body_max = max(heights) or 0
+    if body_max <= 0:
         return
-    if re.search(r"[。！？!?，,；;：:）)]$", first):
-        return
-    body_max = max(heights[1:]) or 0
-    if body_max <= 0 or heights[0] > body_max * 0.8:
-        return
-    m["text"] = "\n".join(lines[1:])
-    m["lh"] = heights[1:]
+    cut = 0
+    # 字号是唯一可靠信号：顶部连续的小字号行（昵称、引用卡片文字）都属于标签块。
+    # 不按标点或长度额外拦截——引用正文经常以「？」结尾、也可能很长。
+    while (cut < len(lines) - 1 and cut < 4
+           and heights[cut] <= body_max * 0.8):
+        if not lines[cut].strip():
+            break
+        cut += 1
+    if cut:
+        m["text"] = "\n".join(lines[cut:])
+        m["lh"] = heights[cut:]
 
 
 def _side(m, pane_x0: float = PANE_X0) -> str:
