@@ -111,5 +111,33 @@ class AxThrottleTests(unittest.TestCase):
         self.assertEqual(mocked.call_count, 2)
 
 
+class StripLabelTests(unittest.TestCase):
+    """借鉴 #140：群聊昵称/引用块首行（字号更小）不并入正文。"""
+
+    def _two_line(self, first, second, x=0.50, first_h=0.012, body_h=0.018):
+        return [
+            block(first, 0.20, x, w=0.18, h=first_h),
+            block(second, 0.22, x, w=0.18, h=body_h),
+        ]
+
+    def test_smaller_first_line_stripped_for_them(self):
+        parsed = wa.classify_blocks(self._two_line('Wenfeng', '下午三点开会'))
+        self.assertEqual(parsed['messages'][0].text, '下午三点开会')
+
+    def test_same_height_short_line_kept(self):
+        parsed = wa.classify_blocks(self._two_line('好的', '明天见', first_h=0.018))
+        self.assertIn('好的', parsed['messages'][0].text)
+
+    def test_me_message_never_stripped(self):
+        parsed = wa.classify_blocks(self._two_line('Wenfeng', '我的回复', x=0.75))
+        self.assertEqual(parsed['messages'][0].side, 'me')
+        self.assertIn('Wenfeng', parsed['messages'][0].text)
+
+    def test_flag_off_keeps_label(self):
+        with patch.object(wa, 'STRIP_SENDER', False):
+            parsed = wa.classify_blocks(self._two_line('Wenfeng', '下午三点开会'))
+        self.assertIn('Wenfeng', parsed['messages'][0].text)
+
+
 if __name__ == '__main__':
     unittest.main()

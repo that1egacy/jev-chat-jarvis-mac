@@ -35,6 +35,17 @@ HEADER_Y = 0.055     # 顶部联系人栏高度
 INPUT_Y = 0.945      # 输入栏起始（此线以下不算消息）
 MAX_MESSAGES = 12
 
+# 借鉴 #140 的「昵称/引用头不并入正文」：群聊里发言人昵称、引用块的首行字号更小。
+# 默认开；出现误删可用 export JEV_WHATSAPP_STRIP_SENDER=0 关掉。
+STRIP_SENDER = True
+try:
+    import userconfig as _userconfig
+    _raw_strip = _userconfig.get("JEV_WHATSAPP_STRIP_SENDER")
+    if _raw_strip is not None:
+        STRIP_SENDER = str(_raw_strip).strip().lower() not in ("0", "false", "no", "off")
+except Exception:                                  # noqa: BLE001  测试环境无配置也能导入
+    pass
+
 DATE_RE = re.compile(r"^(昨天|今天|前天|星期[一二三四五六日天]|\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2})")
 SYS_RE = re.compile(r"自动消失|更改计时器|已加密|撤回了一条|你已开启|消息已保留")
 TIME_TAIL = re.compile(r"\s*\d{1,2}:\d{2}\s*[^\u4e00-\u9fff\w]{0,6}\s*$|\s*\d{1,2}:\d{2}\s*[Ww✓✔/]{0,3}\s*$")
@@ -195,7 +206,7 @@ def _merge(rows) -> list[dict]:
         if not text or (re.fullmatch(r"\d{1,2}:\d{2}", text) and maxh < 0.014):
             continue
         merged.append({"top": top, "x": min(b.x for b in grp),
-                       "right": max(b.x + b.w for b in grp), "h": maxh,
+                       "right": max(b.x + b.w for b in grp), "h": maxh, "lh": [maxh],
                        "conf": min(b.conf for b in grp), "text": text})
     messages = []
     for m in merged:
@@ -207,9 +218,34 @@ def _merge(rows) -> list[dict]:
                 p["right"] = max(p["right"], m["right"])
                 p["h"] = m["top"] + m["h"] - p["top"]
                 p["conf"] = min(p["conf"], m["conf"])
+                p.setdefault("lh", []).append(m["h"])
                 continue
         messages.append(dict(m))
     return messages
+
+
+def _strip_label_line(m: dict) -> None:
+    """去掉气泡首行的「发言人昵称 / 引用块头」。
+
+    依据字号：首行明显小于正文行高（<=0.8 倍）、长度 <=16、且不以句末标点结尾，
+    才判定为标签行。只对对方消息生效——自己的气泡不显示发言人。
+    """
+    if not STRIP_SENDER or m.get("side") != "them":
+        return
+    lines = m["text"].split("\n")
+    heights = m.get("lh") or []
+    if len(lines) < 2 or len(heights) < 2:
+        return
+    first = lines[0].strip()
+    if not first or len(first) > 16:
+        return
+    if re.search(r"[。！？!?，,；;：:）)]$", first):
+        return
+    body_max = max(heights[1:]) or 0
+    if body_max <= 0 or heights[0] > body_max * 0.8:
+        return
+    m["text"] = "\n".join(lines[1:])
+    m["lh"] = heights[1:]
 
 
 def _side(m, pane_x0: float = PANE_X0) -> str:
@@ -258,6 +294,8 @@ def classify_blocks(blocks, calibration=None) -> dict:
     msgs: list[Message] = []
     for m in raw:
         side = _side(m, pane_x0)
+        m["side"] = side
+        _strip_label_line(m)
         msgs.append(Message(text=m["text"], side=side, y=m["top"], conf=m["conf"],
                             h=m["h"], lines=m["text"].split("\n"),
                             x=m["x"], w=m["right"] - m["x"], last_y=m["top"]))
