@@ -1607,8 +1607,9 @@ class HudController(NSObject):
 
         prev = self._app
         self._app = app
-        if app is not None:
-            # 校准按应用分开：切换应用时换成该应用自己的那份
+        if app is not None and hasattr(self, "_calibrations"):
+            # 校准按应用分开：切换应用时换成该应用自己的那份。
+            # hasattr 兜底：测试夹具直接构造 HudController，不跑 init。
             self._calibration = self._calibrations.get(app.key)
             self._input_calibration = self._input_calibrations.get(app.key)
             self._calibration_wid = None
@@ -1670,8 +1671,11 @@ class HudController(NSObject):
         # follows its AX read path. The read path's applyPosition stays as a backstop;
         # when both agree the dead-band absorbs the duplicate.
         if not self._paused and getattr(app, "needs_screen_capture", False):
-            # 定位跟随「当前前台聊天应用」自己的窗口，而不是写死微信（WhatsApp 下曾吸附到微信窗口）
-            win = app.find_window(previous_wid=getattr(self, "_win_wid", None))
+            # 定位跟随「当前前台聊天应用」自己的窗口，而不是写死微信（WhatsApp 下曾吸附到微信窗口）；
+            # 测试夹具的假 app 没有 find_window，回退原函数
+            finder = getattr(app, "find_window", None)
+            win = (finder(previous_wid=getattr(self, "_win_wid", None)) if finder
+                   else find_wechat_window(previous_wid=getattr(self, "_win_wid", None)))
             if win is not None:
                 self._position_near({"wid": win.wid, "x": win.x, "y": win.y,
                                      "w": win.w, "h": win.h})
@@ -1954,11 +1958,18 @@ class HudController(NSObject):
                     self._push("applyError:", "会话历史保存失败，请检查磁盘空间及权限")
             thems = [m for m in msgs if m.side == "them"]
             newest = thems[-1] if thems else None
-            prev_text = thems[-2].text if len(thems) > 1 else ""
+            # #148 连续消息归组（消费层）：对方连发多条时，判断与生成消费合并文本，
+            # 会话历史仍逐条保存；回复缓存 key 也按组走，避免组内条目各触发一次分析。
+            if newest is not None:
+                newest_index = next(i for i, m in enumerate(msgs) if m is newest)
+                reply_text, group_start = chat_context.reply_group(msgs, newest_index)
+            else:
+                newest_index, reply_text, group_start = 0, "", 0
+            prev_text = msgs[group_start - 1].text if group_start > 0 else ""
 
-            context = self._context_text(msgs, newest) if newest else None
+            context = self._context_text(msgs, newest, reply_text, group_start) if newest else None
             # key 带 app.key：不同 App 的同名会话 / 同文消息不得共用一条回复纪元
-            key = (app.key, res.get("chat_title") or "", newest.text, context,
+            key = (app.key, res.get("chat_title") or "", reply_text, context,
                    tuple(visible)) if newest else None
             self._active_context = context
             if key != self._reply_key:
@@ -1982,8 +1993,8 @@ class HudController(NSObject):
             now = time.time()
 
             # --- anti-flood: track arrivals, never analyze mid-burst
-            if newest.text != self.last_seen:
-                self.last_seen = newest.text
+            if reply_text != self.last_seen:
+                self.last_seen = reply_text
                 self.last_change_ts = now
                 # only on arrival: this function runs every second, and a per-tick line would
                 # bury the timing that matters
@@ -2000,9 +2011,9 @@ class HudController(NSObject):
                      f"{EARLY_SETTLE_S}s）后上屏（两次完整分析最小间隔 {MIN_GAP_S}s）")
                 # latest-wins: overwrite the slot, retire the old verdict — only the newest
                 # text's judgment can ever be consumed, and only by the settle gate below
-                self._enqueue_prework(newest, context, prev_text)
+                self._enqueue_prework(newest, context, prev_text, reply_text)
                 # keep the previous verdict readable; just badge that something new landed
-                self._push("applyIncoming:", (newest.text, newest.sender, prev_text))
+                self._push("applyIncoming:", (reply_text, newest.sender, prev_text))
 
             # Anti-flood, two signals: the blind wait (SETTLE_S, unchanged upper bound) or a
             # content-stability early open — the pane went quiet for STABLE_READS consecutive
@@ -2013,13 +2024,13 @@ class HudController(NSObject):
                                               and self._stable_n >= STABLE_READS)
             cooled = (now - self.last_analyze_ts) >= MIN_GAP_S
             pr = self._prejudge_result
-            pre_hit = pr is not None and pr[0] == newest.text and pr[4] == self._reply_epoch
+            pre_hit = pr is not None and pr[0] == reply_text and pr[4] == self._reply_epoch
             # A pre-judged verdict needs no cooling: its cost was already paid per arrival.
             # Only the full path (no usable pre-judgment) still waits MIN_GAP_S out.
-            if (newest.text != self.analyzed_text and settled and not self._analyzing
+            if (reply_text != self.analyzed_text and settled and not self._analyzing
                     and not self._prejudging and (pre_hit or cooled)):
                 self.last_analyze_ts = now
-                self.analyzed_text = newest.text
+                self.analyzed_text = reply_text
                 self._prejudge_result = None      # spent: a verdict is shown exactly once
                 self._analyzing = True
                 if pre_hit:
@@ -2029,17 +2040,19 @@ class HudController(NSObject):
                     self._push("applyJudgment:", (pr[1], pr[2], pr[3]))
                     threading.Thread(target=self._reply_task,
                                      args=(self._reply_epoch, self._run_generation,
-                                           newest, msgs, pr[1]), daemon=True).start()
+                                           newest, msgs, pr[1], reply_text, group_start),
+                                     daemon=True).start()
                 else:
                     _log(f"开始分析 · 这条消息出现到现在 {now - self.last_change_ts:.1f}s")
-                    self._push("applyPending:", (newest.text, newest.sender, prev_text))
+                    self._push("applyPending:", (reply_text, newest.sender, prev_text))
                     # off the tick path on purpose: judge+generate+rank takes over a second, and
                     # while it runs the loop must keep reading — a message landing mid-analysis
                     # used to wait the whole analysis out before anyone even saw it
                     threading.Thread(target=self._reply_task,
                                      args=(self._reply_epoch, self._run_analysis,
-                                           newest, msgs, prev_text), daemon=True).start()
-            elif newest.text != self.analyzed_text:
+                                           newest, msgs, prev_text, reply_text, group_start),
+                                     daemon=True).start()
+            elif reply_text != self.analyzed_text:
                 # the wait is deliberate; say so once per arrival change so "it feels slow" can
                 # be told apart from "it is still waiting out the burst window"
                 why = ("消息还在变" if not settled else
@@ -2053,7 +2066,7 @@ class HudController(NSObject):
                 self._last_skip_reason = None
 
     @objc.python_method
-    def _enqueue_prework(self, newest, context, prev_text):
+    def _enqueue_prework(self, newest, context, prev_text, reply_text=None):
         """Queue the prejudge + pregen halves at the current reply epoch (latest-wins).
 
         Fired on arrival and re-fired when an empty-OCR frame retires the in-flight
@@ -2062,21 +2075,23 @@ class HudController(NSObject):
         dropdown click during the window invalidates the result at consumption time
         (checked in _take_pregen).
         """
-        self._prejudge_req = (newest.text, context,
+        text = newest.text if reply_text is None else reply_text
+        self._prejudge_req = (text, context,
                               newest.sender, prev_text, self._reply_epoch)
         self._prejudge_result = None
         self._prejudge_event.set()
-        self._pregen_req = (newest.text, context,
+        self._pregen_req = (text, context,
                             tuple(self.slot_tones), self._reply_epoch)
         self._pregen_result = None
         self._pregen_event.set()
 
     @objc.python_method
-    def _run_analysis(self, newest, msgs, prev_text: str):
+    def _run_analysis(self, newest, msgs, prev_text: str,
+                      reply_text=None, group_start=None):
         try:
             if not self._reply_current():
                 return
-            self._analyze(newest, msgs, prev_text)
+            self._analyze(newest, msgs, prev_text, reply_text, group_start)
         except Exception as e:
             _log(f"分析失败 {type(e).__name__}")
             self._push("applyError:", f"分析失败: {type(e).__name__}")
@@ -2213,7 +2228,8 @@ class HudController(NSObject):
         return gen
 
     @objc.python_method
-    def _run_generation(self, newest, msgs, verdict: dict):
+    def _run_generation(self, newest, msgs, verdict: dict,
+                        reply_text=None, group_start=None):
         """The pre-judged path's second half: collect generation + rank, judgment shown.
 
         The early run usually finished inside the settle window, so what is left here is
@@ -2226,15 +2242,16 @@ class HudController(NSObject):
         try:
             if not self._reply_current():
                 return
-            context = self._context_text(msgs, newest)
-            gen, wait_ms = self._take_pregen(newest.text, tuple(self.slot_tones))
+            text = newest.text if reply_text is None else reply_text
+            context = self._context_text(msgs, newest, text, group_start)
+            gen, wait_ms = self._take_pregen(text, tuple(self.slot_tones))
             if not self._reply_current():
                 return
             note = f"（早跑命中，停稳后仅等 {wait_ms:.0f}ms）" if gen is not None else ""
             if gen is None:
-                gen = self.generator.generate(chat_context.model_message(newest.text, context), "", list(self.slot_tones),
+                gen = self.generator.generate(chat_context.model_message(text, context), "", list(self.slot_tones),
                                               context, self._stream_hook(t0))
-            self._finish_generate(gen, newest, t0, verdict, note)
+            self._finish_generate(gen, newest, t0, verdict, note, text)
         except Exception as e:
             _log(f"生成失败 {type(e).__name__}")
             self._push("applyError:", f"候选生成失败: {type(e).__name__}")
@@ -2299,21 +2316,30 @@ class HudController(NSObject):
             self._context_changed()
 
     @objc.python_method
-    def _context_text(self, msgs, newest) -> str | None:
+    def _context_text(self, msgs, newest, reply_text=None, group_start=None) -> str | None:
         if hasattr(self._reply_worker, "context"):
             return self._reply_worker.context
         with self._context_lock:
             store = self.reload_conversations()
             title = (self._last_full or {}).get("chat_title")
+            index = next(i for i, m in enumerate(msgs) if m is newest)
+            observed = self._observed_messages if self._observed_messages is not None else \
+                [(m.text, m.side, m.sender or "") for m in msgs]
+            target = self._observed_offset + index
+            if reply_text is not None and group_start is not None and group_start <= index:
+                # #148：把组内多条合成为一条「当前待回复消息」，历史里不再重复列出组内条目
+                merged = (reply_text, newest.side, newest.sender or "")
+                observed = [m for i, m in enumerate(observed)
+                            if not (self._observed_offset + group_start <= i <= target)]
+                target = self._observed_offset + group_start
+                observed.insert(target, merged)
             return chat_context.context_text(
-                self._observed_messages if self._observed_messages is not None else
-                [(m.text, m.side, m.sender or "") for m in msgs],
-                self._observed_offset + next(i for i, m in enumerate(msgs) if m is newest),
-                limit=self.context_limit,
+                observed, target, limit=self.context_limit,
                 background=store.data.get(title, {}).get('background', '') if store else "")
 
     @objc.python_method
-    def _analyze(self, newest, msgs, prev_text: str = ""):
+    def _analyze(self, newest, msgs, prev_text: str = "",
+                 reply_text=None, group_start=None):
         """Judge and generate in parallel, then rank. Judgment lands on screen first.
 
         Runs on its own thread (started by _work_inner): it takes over a second and must
@@ -2322,13 +2348,14 @@ class HudController(NSObject):
         import concurrent.futures as cf
 
         t0 = time.perf_counter()
-        context = self._context_text(msgs, newest)
+        text = newest.text if reply_text is None else reply_text
+        context = self._context_text(msgs, newest, text, group_start)
         with cf.ThreadPoolExecutor(max_workers=2) as ex:
             # generation does not need the intent, so it runs while judging; it prefers an
             # early run that started at detection time (_gen_with_pregen) — only a miss
             # streams, and only that fresh call takes the hook
             gen_future = ex.submit(self._reply_task, self._reply_worker.epoch,
-                                   self._gen_with_pregen, newest.text, context,
+                                   self._gen_with_pregen, text, context,
                                    self._stream_hook(t0))
             verdict = None
             t_judge = time.perf_counter()
@@ -2337,7 +2364,7 @@ class HudController(NSObject):
                     if not self._reply_current():
                         return
                     verdict = self.judge.judge(
-                        chat_context.model_message(newest.text, context), context=context)
+                        chat_context.model_message(text, context), context=context)
                 ms = (time.perf_counter() - t_judge) * 1000
                 first = not self._judged_once
                 self._judged_once = True
@@ -2369,7 +2396,7 @@ class HudController(NSObject):
 
     @objc.python_method
     def _finish_generate(self, gen: dict, newest, t0: float, verdict: dict | None,
-                         note: str = ""):
+                         note: str = "", reply_text=None):
         """Log the generation, push candidates unranked, rank, push the ordered version.
 
         Shared by both analysis paths — the full one (judge ran here) and the pre-judged
@@ -2398,7 +2425,8 @@ class HudController(NSObject):
         if intent:
             self._push("applyCandidates:", payload)
         t_rank = time.perf_counter()
-        ranked = self._rank_payload(payload, newest.text, intent) if intent else payload
+        text = newest.text if reply_text is None else reply_text
+        ranked = self._rank_payload(payload, text, intent) if intent else payload
         rank_ms = (time.perf_counter() - t_rank) * 1000
         if intent:
             backend = getattr(self.judge, "backend_label", "本地 decider-2b，一次前向")

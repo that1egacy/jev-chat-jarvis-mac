@@ -3,6 +3,38 @@ from __future__ import annotations
 
 CONTEXT_CHARS = 8192
 
+# 连续消息归组（#148）：同侧、纵向相邻、中间没有对方/我方插入的消息视为一个「回复片段组」。
+# 归组只影响判断与生成的输入（消费层），会话历史仍逐条保存。
+GROUP_GAP = 0.06      # 归一化窗口高度下的气泡间距上限
+GROUP_MAX = 8         # 一个组最多合并多少条
+GROUP_CHARS = 800     # 合并文本上限，避免把模型输入撑爆
+
+
+def reply_group(messages, index: int, gap: float = GROUP_GAP,
+                limit: int = GROUP_MAX) -> tuple[str, int]:
+    """从 index 向前取同一方的连续消息，返回 (合并文本, 组首索引)。
+
+    Message 需要 text / side / y / h；y 是窗口归一化的顶边。切断条件：
+    另一侧消息（含未确认）、间距超过 gap、到达列表开头或数量上限。
+    """
+    if not messages or index < 0 or index >= len(messages):
+        return "", max(0, min(index, len(messages) - 1))
+    side = messages[index].side
+    start, remaining = index, max(1, limit)
+    while start > 0 and remaining > 1:
+        prev, cur = messages[start - 1], messages[start]
+        if prev.side != side:
+            break
+        between = cur.y - (prev.y + (getattr(prev, "h", 0) or 0.0))
+        if between > gap:
+            break
+        start -= 1
+        remaining -= 1
+    merged = "\n".join(m.text for m in messages[start:index + 1] if m.text)
+    if len(merged) > GROUP_CHARS:
+        merged = merged[-GROUP_CHARS:]
+    return merged, start
+
 
 def model_message(text: str, context: str | None = None) -> str:
     return text[:max(0, CONTEXT_CHARS - len(context or ""))]
