@@ -19,7 +19,19 @@ MODES: dict[str, dict] = {
     },
 }
 DEFAULT_KEY = "im"
-_active = DEFAULT_KEY
+
+
+def _initial_key() -> str:
+    """启动时的场景：env 的 JEV_SCENE 优先（合法值才认，否则回默认）。"""
+    try:
+        import userconfig
+        key = (userconfig.get("JEV_SCENE") or "").strip().lower()
+    except Exception:                                    # noqa: BLE001
+        return DEFAULT_KEY
+    return key if key in MODES else DEFAULT_KEY
+
+
+_active = _initial_key()
 
 
 def active_key() -> str:
