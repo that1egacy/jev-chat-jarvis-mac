@@ -49,6 +49,18 @@ def validate_candidate_count(raw: str) -> int:
 
 PER_TONE = candidate_count(userconfig.get("JEV_CANDIDATES_PER_TONE"))
 
+
+def set_per_tone(value) -> int:
+    """#147：设置页保存后运行时改候选数（面板行由 hud 重建）。"""
+    global PER_TONE
+    PER_TONE = candidate_count(str(value))
+    return PER_TONE
+
+
+def refresh_candidates() -> int:
+    """从当前配置重读候选数。"""
+    return set_per_tone(userconfig.get("JEV_CANDIDATES_PER_TONE"))
+
 # label -> instruction. Order here is the order shown in the dropdowns.
 #
 # Each entry is written as a *persona plus its verbal tics*, not as a description of a mood.

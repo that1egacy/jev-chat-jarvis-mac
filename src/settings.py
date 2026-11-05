@@ -124,11 +124,11 @@ class SettingsController(NSObject):
                     str(value) for value in range(styles.MIN_PER_TONE, styles.MAX_PER_TONE + 1)])
                 self.candidate_count.selectItemWithTitle_(str(styles.PER_TONE))
                 self.candidate_count.setAccessibilityLabel_("每种话术候选数，1 到 5 条")
-                self.candidate_count.setToolTip_("每种话术生成的候选回复条数；保存后重启生效。")
+                self.candidate_count.setToolTip_("每种话术生成的候选回复条数；保存后立即生效（候选行会重建）。")
                 self.candidate_count.setTarget_(self)
                 self.candidate_count.setAction_("candidateCountChanged:")
                 panel.addSubview_(self.candidate_count)
-                self.label(panel, "条（保存后重启生效）", 258, 43, 170, 20, 11, PALETTE["muted"])
+                self.label(panel, "条（保存后立即生效）", 258, 43, 170, 20, 11, PALETTE["muted"])
                 self.initial["JEV_CANDIDATES_PER_TONE"] = str(styles.PER_TONE)
                 if userconfig.source_of("JEV_CANDIDATES_PER_TONE") == "环境变量":
                     self.candidate_count.setEnabled_(False)
@@ -310,7 +310,7 @@ class SettingsController(NSObject):
         self.set_status("会话记录与背景已修改，点击「保存配置」后生效。")
 
     def candidateCountChanged_(self, sender):
-        self.set_status("候选数量已修改，点击「保存配置」后重启生效。")
+        self.set_status("候选数量已修改，点击「保存配置」后立即生效。")
 
     def textDidChange_(self, notification):
         self.contextControlChanged_(None)
@@ -567,7 +567,7 @@ class SettingsController(NSObject):
             userconfig.session_override(key, value)
         if model_changes and self.hud:
             try:
-                self.hud.reload_generation_config()
+                self.hud.reload_generation_config(changes)
             except Exception:
                 pass
         if model_changes and not (context_changes or backgrounds):

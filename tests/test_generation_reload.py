@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'tests'))
 
 import generate            # noqa: E402
+import styles              # noqa: E402
 import userconfig          # noqa: E402
 
 
@@ -51,6 +52,18 @@ class CredentialReloadTests(unittest.TestCase):
             self.assertEqual(gen._creds_or_load()[2], "model2")     # re-read after reload
 
 
+class CandidateCountTests(unittest.TestCase):
+    def test_set_per_tone_updates_module_and_clamps(self):
+        old = styles.PER_TONE
+        try:
+            self.assertEqual(styles.set_per_tone(5), 5)
+            self.assertEqual(styles.PER_TONE, 5)
+            self.assertEqual(styles.set_per_tone(99), styles.DEFAULT_PER_TONE)   # 越界回落
+            self.assertEqual(styles.refresh_candidates(), styles.PER_TONE)
+        finally:
+            styles.set_per_tone(old)
+
+
 class HudReloadHookTests(unittest.TestCase):
     def setUp(self):
         import test_hud_reply
@@ -62,6 +75,18 @@ class HudReloadHookTests(unittest.TestCase):
     def test_reload_hook_resets_generator(self):
         self.h.reload_generation_config()
         self.h.generator.reload.assert_called_once()
+
+    def test_candidate_count_change_rebuilds_rows(self):
+        from unittest.mock import Mock
+        self.h._rebuild_candidate_rows = Mock()
+        self.h._set_candidate_header = Mock()
+        old = styles.PER_TONE
+        try:
+            self.h.reload_generation_config({"JEV_CANDIDATES_PER_TONE": "1"})
+            self.assertEqual(styles.PER_TONE, 1)
+            self.h._rebuild_candidate_rows.assert_called_once()
+        finally:
+            styles.set_per_tone(old)
 
 
 if __name__ == '__main__':

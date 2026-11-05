@@ -77,6 +77,7 @@ from apps.registry import APPS, UNKNOWN, frontmost_app  # noqa: E402  按前台 
 import judge  # noqa: E402  (model_cached / model_disk_usage: the #38 onboarding + settings)
 from judge import LowMemoryError, ModelNotDownloadedError, make_judge  # noqa: E402
 from generate import BUILTIN_SOURCE, Generator, load_credentials  # noqa: E402
+import modes
 import styles  # noqa: E402
 import fill  # noqa: E402
 import ui_style  # noqa: E402
@@ -251,7 +252,7 @@ class HudController(NSObject):
         self.generator = Generator()
         # 话术: per-slot tone selection. A slot on 不用 contributes no request and no rows,
         # so the panel is exactly as tall as the groups actually in use.
-        self.slot_tones = list(styles.DEFAULT_SLOTS) + [styles.NONE_LABEL]
+        self.slot_tones = list(modes.tones()) + [styles.NONE_LABEL]
         self.slot_tones = self.slot_tones[:styles.MAX_SLOTS]
         while len(self.slot_tones) < styles.MAX_SLOTS:
             self.slot_tones.append(styles.NONE_LABEL)
@@ -540,35 +541,7 @@ class HudController(NSObject):
             view.addSubview_(pop)
             self._dds.append(pop)
 
-            slot_rows = []
-            for row in range(styles.PER_TONE):
-                tag = slot * styles.PER_TONE + row
-                row_box = self._make_surface(8, PALETTE["row"], PALETTE["edge"])
-                row_box.setHidden_(True)
-                view.addSubview_(row_box)
-                prob = self._make_label(CAND_PROB_X, 0, CAND_PROB_W, 32,
-                                        size=10, color=PALETTE["green"], bold=True)
-                prob.cell().setWraps_(True)
-                text = self._make_label(CAND_TEXT_X, 0, CAND_TEXT_W, 18,
-                                        size=11, color=PALETTE["text"])
-                text.cell().setWraps_(True)
-                text.cell().setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
-                if hasattr(text.cell(), "setMaximumNumberOfLines_"):
-                    text.cell().setMaximumNumberOfLines_(0)
-                copy_btn = self._make_button(CAND_BTN_X, 0, CAND_BTN_W, CAND_BTN_H,
-                                             "复制", "copyCandidate:", tag)
-                fill_btn = self._make_button(CAND_BTN_X + CAND_BTN_W + CAND_BTN_GAP, 0,
-                                             CAND_BTN_W, CAND_BTN_H, "填入", "fillCandidate:", tag)
-                track = self._make_surface(2, PALETTE["track"])
-                fill_bar = self._make_surface(2, PALETTE["green"])
-                track.setHidden_(True)
-                fill_bar.setHidden_(True)
-                for c in (prob, text, copy_btn, fill_btn, track, fill_bar):
-                    view.addSubview_(c)
-                slot_rows.append({"box": row_box, "prob": prob, "text": text,
-                                  "btn": copy_btn, "fill_btn": fill_btn,
-                                  "track": track, "fill": fill_bar})
-            self._rows.append(slot_rows)
+            self._rows.append(self._build_candidate_rows(view, slot))
 
         self.reanalyze_button = self._make_button(
             14, 0, 96, 28, "立刻分析", "reanalyze:", 0)
@@ -620,6 +593,52 @@ class HudController(NSObject):
         view = _BoxesView.alloc().init()
         view.boxes = []
         self._ov_panel.setContentView_(view)
+
+    @objc.python_method
+    def _build_candidate_rows(self, view, slot: int) -> list[dict]:
+        """Create one group's candidate rows for the current styles.PER_TONE."""
+        slot_rows = []
+        for row in range(styles.PER_TONE):
+            tag = slot * styles.PER_TONE + row
+            row_box = self._make_surface(8, PALETTE["row"], PALETTE["edge"])
+            row_box.setHidden_(True)
+            view.addSubview_(row_box)
+            prob = self._make_label(CAND_PROB_X, 0, CAND_PROB_W, 32,
+                                    size=10, color=PALETTE["green"], bold=True)
+            prob.cell().setWraps_(True)
+            text = self._make_label(CAND_TEXT_X, 0, CAND_TEXT_W, 18,
+                                    size=11, color=PALETTE["text"])
+            text.cell().setWraps_(True)
+            text.cell().setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
+            if hasattr(text.cell(), "setMaximumNumberOfLines_"):
+                text.cell().setMaximumNumberOfLines_(0)
+            copy_btn = self._make_button(CAND_BTN_X, 0, CAND_BTN_W, CAND_BTN_H,
+                                         "复制", "copyCandidate:", tag)
+            fill_btn = self._make_button(CAND_BTN_X + CAND_BTN_W + CAND_BTN_GAP, 0,
+                                         CAND_BTN_W, CAND_BTN_H, "填入", "fillCandidate:", tag)
+            track = self._make_surface(2, PALETTE["track"])
+            fill_bar = self._make_surface(2, PALETTE["green"])
+            track.setHidden_(True)
+            fill_bar.setHidden_(True)
+            for c in (prob, text, copy_btn, fill_btn, track, fill_bar):
+                view.addSubview_(c)
+            slot_rows.append({"box": row_box, "prob": prob, "text": text,
+                              "btn": copy_btn, "fill_btn": fill_btn,
+                              "track": track, "fill": fill_bar})
+        return slot_rows
+
+    @objc.python_method
+    def _rebuild_candidate_rows(self):
+        """#147：候选数改了以后重建行控件并重新布局（panel 尺寸随之变化）。"""
+        view = self.panel.contentView()
+        for slot in range(styles.MAX_SLOTS):
+            for row in self._rows[slot]:
+                for control in row.values():
+                    control.removeFromSuperview()
+            self._rows[slot] = self._build_candidate_rows(view, slot)
+        self.cand_texts = [None] * (styles.MAX_SLOTS * styles.PER_TONE)
+        self._stream_rows.clear()
+        self._relayout()
 
     @objc.python_method
     def _slot_active(self, slot: int) -> bool:
@@ -764,6 +783,13 @@ class HudController(NSObject):
             ("恢复自动识别区域", "clearCalibration:", ""),
         ):
             menu.addItemWithTitle_action_keyEquivalent_(title, action, key)
+        # #153 场景预设：菜单切换（全局热键留给下一阶段）
+        self._scene_items = []
+        for index, (mode_key, mode) in enumerate(modes.MODES.items()):
+            item = menu.addItemWithTitle_action_keyEquivalent_(
+                f"场景：{mode['name']}", "sceneChanged:", "")
+            item.setTag_(index)
+            self._scene_items.append(item)
         menu.addItem_(AppKit.NSMenuItem.separatorItem())
         menu.addItemWithTitle_action_keyEquivalent_("退出 jev-jarvis", "quitApp:", "q")
         for item in menu.itemArray():
@@ -775,7 +801,44 @@ class HudController(NSObject):
             AppKit.NSOnState if self._show_boxes else AppKit.NSOffState)
         self.always_on_top_item.setState_(
             AppKit.NSOnState if self._always_on_top else AppKit.NSOffState)
+        self._refresh_scene_items()
         self.status_item.setMenu_(menu)
+
+    @objc.python_method
+    def _refresh_scene_items(self):
+        for item in getattr(self, "_scene_items", []):
+            key = list(modes.MODES)[item.tag()]
+            item.setState_(AppKit.NSOnState if key == modes.active_key()
+                           else AppKit.NSOffState)
+
+    @objc.python_method
+    def _apply_scene_tones(self):
+        """把场景预设的话术填入三个槽位（不足补「不用」）。"""
+        tones = list(modes.tones())[:styles.MAX_SLOTS]
+        while len(tones) < styles.MAX_SLOTS:
+            tones.append(styles.NONE_LABEL)
+        self.slot_tones = tones
+        for slot, dropdown in enumerate(getattr(self, "_dds", [])):
+            dropdown.selectItemWithTitle_(self.slot_tones[slot])
+
+    def sceneChanged_(self, sender):
+        """菜单切换场景：改白名单 + 话术；当前渠道不在白名单时按「离开」处理。"""
+        keys = list(modes.MODES)
+        key = keys[sender.tag()]
+        if key == modes.active_key():
+            return
+        try:
+            mode = modes.set_active(key)
+        except ValueError as exc:
+            _log(str(exc))
+            return
+        self._apply_scene_tones()
+        self._refresh_scene_items()
+        self._relayout()
+        _log(f"场景切换 · {mode['name']}（渠道 {'/'.join(mode['apps'])}）")
+        app = getattr(self, "_app", None)
+        if app is not None and not modes.allows(app.key):
+            self._set_foreground_state(None)
 
     @objc.python_method
     def _retire_calibration_results(self):
@@ -2259,14 +2322,19 @@ class HudController(NSObject):
             self._analyzing = False
 
     @objc.python_method
-    def reload_generation_config(self):
-        """#147：设置保存后让生成层立即使用新配置（凭据/地址/模型）。
+    def reload_generation_config(self, changes=None):
+        """#147：设置保存后让生成层立即使用新配置（凭据/地址/模型/候选数）。
 
         凭据在 Generator 里缓存过一次；清掉后下一个请求会重新按 env 解析。
-        判断层切换与候选数（面板行数启动时构建）仍按重启约定，见设置页说明。
+        候选数改了会重建候选行并重排面板；判断层切换仍按重启约定（涉及模型加载/卸载）。
         """
         self.generator.reload()
         _log("生成配置已重载 · 下一个请求使用新配置")
+        if changes and "JEV_CANDIDATES_PER_TONE" in changes:
+            styles.set_per_tone(changes["JEV_CANDIDATES_PER_TONE"])
+            self._rebuild_candidate_rows()
+            self._set_candidate_header("候选回复（按合适度排序）")
+            _log(f"候选数已改为 {styles.PER_TONE} 条 · 下一轮生成按新数量")
 
     @objc.python_method
     def reload_conversations(self):
