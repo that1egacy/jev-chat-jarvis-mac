@@ -41,7 +41,8 @@ def write_settings(path: Path, original: str, changes: dict[str, str]) -> str:
     # the settings window's offline-model section writes it through the same guarded path.
     allowed = {f"{p}_{f}" for p in PREFIXES for f in FIELDS} | {
         "JUDGE_BACKEND", "JEV_HISTORY", "JEV_CONTEXT_MESSAGES",
-        "JEV_MESSAGE_REGION", "JEV_INPUT_REGION", "JEV_CANDIDATES_PER_TONE"}
+        "JEV_MESSAGE_REGION", "JEV_INPUT_REGION", "JEV_CANDIDATES_PER_TONE",
+        "JEV_MESSAGE_REGION_WHATSAPP", "JEV_INPUT_REGION_WHATSAPP"}
     if not changes.keys() <= allowed:
         raise ValueError("不支持的配置项。")
     for value in changes.values():

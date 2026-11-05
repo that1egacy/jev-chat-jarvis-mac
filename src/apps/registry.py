@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from apps.ax_app import AXApp
 from apps.capture_app import CaptureApp
+from apps.whatsapp_app import WhatsAppApp
 
 UNKNOWN = object()          # 前台查询失败的哨兵；`is` 比较
-APPS = (CaptureApp(), AXApp())
+APPS = (CaptureApp(), AXApp(), WhatsAppApp())
 
 
 def _frontmost():

@@ -189,13 +189,35 @@ class HudController(NSObject):
         self = objc.super(HudController, self).init()
         if self is None:
             return None
-        self._input_calibration = None
-        self._input_calibration_wid = None
-        self._input_calibration_saved = userconfig.get("JEV_INPUT_REGION")
-        self._calibration = None
+        from calibration import Calibration
+
+        def _parse_saved_calibration(raw):
+            if not raw:
+                return None
+            try:
+                return Calibration.parse(raw)
+            except (ValueError, TypeError):
+                return None
+
+        # 每个聊天应用各存一份校准：微信沿用历史键名，其它应用加 _<KEY> 后缀
+        self._calibrations = {}
+        self._input_calibrations = {}
+        for _key in ("wechat", "whatsapp"):
+            _suffix = "" if _key == "wechat" else "_" + _key.upper()
+            _m = _parse_saved_calibration(userconfig.get("JEV_MESSAGE_REGION" + _suffix))
+            _i = _parse_saved_calibration(userconfig.get("JEV_INPUT_REGION" + _suffix))
+            if _m is not None:
+                self._calibrations[_key] = _m
+            if _i is not None:
+                self._input_calibrations[_key] = _i
+        self._calibration = self._calibrations.get("wechat")
+        self._input_calibration = self._input_calibrations.get("wechat")
+        self._calibration_saved = self._calibration.serialize() if self._calibration else ""
+        self._input_calibration_saved = (self._input_calibration.serialize()
+                                         if self._input_calibration else "")
         self._calibration_wid = None
-        self._calibration_saved = userconfig.get("JEV_MESSAGE_REGION")
-        self._calibration_required = bool(self._calibration_saved)
+        self._input_calibration_wid = None
+        self._calibration_required = bool(self._calibration_saved) and self._calibration is None
         self._calibrating = False
         self.last_seen = None          # newest message text observed
         self._reply_key = None         # (conversation, incoming text), never an outgoing message
@@ -781,9 +803,21 @@ class HudController(NSObject):
         self.panel.orderOut_(None)
         self._ov_panel.orderOut_(None)
         try:
+            _app = self._app
+            _key = _app.key if _app is not None else "wechat"
+            _suffix = "" if _key == "wechat" else "_" + _key.upper()
+            _msg_saved = (self._calibrations[_key].serialize()
+                          if _key in self._calibrations else "")
+            _inp_saved = (self._input_calibrations[_key].serialize()
+                          if _key in self._input_calibrations else "")
+            self._calibrating_key = _key
             self.calibration_controller = CalibrationController.alloc().init().build(
-                self._calibration_finished, self._calibration_saved,
-                saved_input=self._input_calibration_saved)
+                self._calibration_finished, _msg_saved, saved_input=_inp_saved,
+                finder=(_app.find_window if _app is not None else None),
+                message_key="JEV_MESSAGE_REGION" + _suffix,
+                input_key="JEV_INPUT_REGION" + _suffix,
+                preview_reader=(getattr(_app, "preview_messages", None)
+                                if _app is not None else None))
         except (ValueError,OSError) as e:
             self._calibrating = False
             self._show()
@@ -799,6 +833,9 @@ class HudController(NSObject):
             self._calibration = message
             self._calibration_wid = wid
             self._calibration_saved = message.serialize()
+            _key = getattr(self, "_calibrating_key", "wechat")
+            self._calibrations[_key] = message
+            self._input_calibrations[_key] = editor
             self._calibration_required = True
         self._calibrating = False
         self._retire_calibration_results()
@@ -1570,6 +1607,12 @@ class HudController(NSObject):
 
         prev = self._app
         self._app = app
+        if app is not None:
+            # 校准按应用分开：切换应用时换成该应用自己的那份
+            self._calibration = self._calibrations.get(app.key)
+            self._input_calibration = self._input_calibrations.get(app.key)
+            self._calibration_wid = None
+            self._input_calibration_wid = None
         self._foreground_epoch += 1
         self._reply_epoch += 1
         self._reply_key = None
@@ -1627,7 +1670,8 @@ class HudController(NSObject):
         # follows its AX read path. The read path's applyPosition stays as a backstop;
         # when both agree the dead-band absorbs the duplicate.
         if not self._paused and getattr(app, "needs_screen_capture", False):
-            win = find_wechat_window(previous_wid=getattr(self, "_win_wid", None))
+            # 定位跟随「当前前台聊天应用」自己的窗口，而不是写死微信（WhatsApp 下曾吸附到微信窗口）
+            win = app.find_window(previous_wid=getattr(self, "_win_wid", None))
             if win is not None:
                 self._position_near({"wid": win.wid, "x": win.x, "y": win.y,
                                      "w": win.w, "h": win.h})
@@ -1679,7 +1723,7 @@ class HudController(NSObject):
             return
         if getattr(self, "_calibrating", False):
             return
-        if (app.needs_screen_capture
+        if (app.key == "wechat"
                 and getattr(self, "_calibration_required", False)
                 and self._calibration is None):
             # 校准只约束截图路径；文本接口路径读界面树，无消息区可校准。
@@ -1691,7 +1735,7 @@ class HudController(NSObject):
         try:
             # calibration 只被截图路径接受；文本接口适配器签名里没有它，不传。
             extra = {}
-            if app.needs_screen_capture and getattr(self, "_calibration", None):
+            if getattr(self, "_calibration", None):
                 extra = {"calibration": self._calibration}
             res = app.read_conversation(previous_wid=self._win_wid,
                                         prev_fingerprint=self._fingerprint,
@@ -1703,7 +1747,8 @@ class HudController(NSObject):
         if capture_foreground_epoch != self._foreground_epoch:
             return
         if getattr(self, "_calibration", None) and (res.get("calibration_error")
-                or (res.get("window") and res["window"]["wid"] != self._calibration_wid)):
+                or (self._calibration_wid is not None and res.get("window")
+                    and res["window"]["wid"] != self._calibration_wid)):
             self._calibration = None
             self._input_calibration = None
             self._input_calibration_wid = None
@@ -1854,7 +1899,7 @@ class HudController(NSObject):
                     reason="手动校准输入区" if ax_box is None else "手动校准输入区 · AX 可写")
             self._input_window = dict(res["window"])
             self._input_next = float("inf")
-            if not res.get("chat_title"):
+            if not res.get("chat_title") and not res.get("manual_calibration"):
                 res = dict(res, messages=[])
         # AX traversal stays on the read worker, never the Cocoa drawing thread.
         now_input = time.monotonic()
