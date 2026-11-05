@@ -112,22 +112,23 @@ _rgb = ui_style.rgb
 
 # Compact reply rows: probability rail, fully wrapped reply, then the two existing actions.
 # Only the minimum is fixed. _relayout() measures each candidate and grows the row as needed.
-CAND_ROW_X, CAND_ROW_W, CAND_ROW_MIN_H = 20, PANEL_W - 40, 50
+CAND_ROW_X, CAND_ROW_W, CAND_ROW_MIN_H = 20, PANEL_W - 40, 44
 CAND_PROB_X, CAND_PROB_W = 30, 44
 CAND_TEXT_X, CAND_TEXT_W = 82, 144
 CAND_BTN_W, CAND_BTN_H, CAND_BTN_GAP = 48, 22, 4
 CAND_BTN_X = PANEL_W - 26 - (2 * CAND_BTN_W + CAND_BTN_GAP)
-CAND_ROW_GAP = 4
+CAND_ROW_GAP = 3
 
 # 话术 groups. Each group is headed by its dropdown; its candidates sit under it. The panel
 # is only as tall as the groups in use, so nothing is reserved for a tone that is switched
 # off (that reservation is what used to leave a dead gap in the middle).
 TONE_DD_X, TONE_DD_W, TONE_DD_H, TONE_DD_GAP = 20, PANEL_W - 40, 24, 5
+COMPACT_ROWS = 1          # 每组默认只显示前几条候选；其余点「更多」展开
 TONE_DD_INSET = 8         # the popup sits this far inside its field, like text in an input box
 TONE_DD_FONT = 12         # compact but still the clearest interactive label in each group
                           # thing on the panel the user is meant to click
-GROUP_PAD_Y = 5           # breathing room above the selector and below the final reply
-GROUP_GAP = 10            # between one group's rows and the next group's dropdown
+GROUP_PAD_Y = 4           # breathing room above the selector and below the final reply
+GROUP_GAP = 6            # between one group's rows and the next group's dropdown
 BOTTOM_PAD = 14           # below the last group
 
 
@@ -516,6 +517,8 @@ class HudController(NSObject):
         self._set_candidate_header("候选回复（按合适度排序）")
         self._fixed.append((header, 18, 250, PANEL_W - 36, 18))
         self._detail_views.append(header)
+        self._expanded_slots: set[int] = set()   # 用户点「更多」展开的候选组
+        self._more_buttons: list = []           # 每组右上角的「更多 / 收起」
         self._group_top = 274
 
         # ---- 话术 groups: each dropdown heads a group and its candidates sit underneath,
@@ -547,6 +550,10 @@ class HudController(NSObject):
             pop.setAction_("toneChanged:")
             view.addSubview_(pop)
             self._dds.append(pop)
+            more = self._make_button(0, 0, 74, 22, "更多 ▾", "toggleSlotMore:", slot)
+            more.setHidden_(True)
+            view.addSubview_(more)
+            self._more_buttons.append(more)
 
             self._rows.append(self._build_candidate_rows(view, slot))
 
@@ -650,6 +657,29 @@ class HudController(NSObject):
         self._stream_rows.clear()
         self._relayout()
 
+    def toggleAllSlots_(self, sender):
+        """一次展开/收起所有组的候选（默认每组只显示 1 条）。"""
+        if self._expanded_slots:
+            self._expanded_slots.clear()
+        else:
+            self._expanded_slots.update(range(styles.MAX_SLOTS))
+        self._relayout()
+
+    @objc.python_method
+    def _visible_rows(self, slot: int) -> int:
+        """紧凑模式：每组默认只显示前 COMPACT_ROWS 条，点「更多」看全部。"""
+        if slot in getattr(self, "_expanded_slots", set()):
+            return styles.PER_TONE
+        return max(1, min(COMPACT_ROWS, styles.PER_TONE))
+
+    def toggleSlotMore_(self, sender):
+        slot = sender.tag()
+        if slot in self._expanded_slots:
+            self._expanded_slots.discard(slot)
+        else:
+            self._expanded_slots.add(slot)
+        self._relayout()
+
     @objc.python_method
     def _slot_active(self, slot: int) -> bool:
         return self.slot_tones[slot] in styles.PRESETS
@@ -683,17 +713,28 @@ class HudController(NSObject):
             self._group_boxes[slot].setHidden_(not active)
             group_top = dy
             selector_top = dy + (GROUP_PAD_Y if active else 0)
+            has_more = active and styles.PER_TONE > 1
+            dd_w = TONE_DD_W - (86 if has_more else 0)
             placements.append((self._dd_boxes[slot], TONE_DD_X, selector_top,
-                               TONE_DD_W, TONE_DD_H))
+                               dd_w, TONE_DD_H))
             placements.append((self._dds[slot], TONE_DD_X + TONE_DD_INSET, selector_top,
-                               TONE_DD_W - 2 * TONE_DD_INSET, TONE_DD_H))
+                               dd_w - 2 * TONE_DD_INSET, TONE_DD_H))
+            if 0 <= slot < len(self._more_buttons):
+                more_btn = self._more_buttons[slot]
+                more_btn.setHidden_(not has_more)
+                if has_more:
+                    expanded = slot in self._expanded_slots
+                    more_btn.setTitle_(f"收起 ▴" if expanded else
+                                       f"更多 {styles.PER_TONE - self._visible_rows(slot)} ▾")
+                    placements.append((more_btn, TONE_DD_X + dd_w + 4, selector_top + 1, 82, 22))
             dy = selector_top + TONE_DD_H
             if active:
                 dy += TONE_DD_GAP
+            visible_rows = self._visible_rows(slot)
             for row in range(styles.PER_TONE):
                 r = self._rows[slot][row]
                 controls = self._row_controls(slot, row)
-                if active:
+                if active and row < visible_rows:
                     # The candidate decides its own height. Short replies keep the compact
                     # minimum; longer localized text grows without truncation.
                     text_h = self._candidate_text_height(r["text"])
@@ -713,7 +754,7 @@ class HudController(NSObject):
                         (r["fill"], CAND_PROB_X + 4, metric_top + 36, progress_w, 4),
                     ]
                     dy += row_h
-                    if row < styles.PER_TONE - 1:
+                    if row < visible_rows - 1:
                         dy += CAND_ROW_GAP
                 else:
                     for c in controls:
@@ -797,6 +838,7 @@ class HudController(NSObject):
             ("校准区域…", "calibrateMessages:", ""),
             ("恢复自动识别区域", "clearCalibration:", ""),
             ("有新消息时自动显示", "toggleAutoshow:", ""),
+            ("展开全部候选", "toggleAllSlots:", ""),
         ):
             menu.addItemWithTitle_action_keyEquivalent_(title, action, key)
         # #153 场景预设：菜单切换（全局热键留给下一阶段）
@@ -1224,7 +1266,8 @@ class HudController(NSObject):
                     r["text"].setStringValue_(it["text"])
                     self._set_progress(slot, row, it["prob"])
                     for c in self._row_controls(slot, row):
-                        c.setHidden_(self._collapsed or not self._slot_active(slot))
+                        c.setHidden_(self._collapsed or not self._slot_active(slot)
+                                     or row >= self._visible_rows(slot))
                     self.cand_texts[slot * styles.PER_TONE + row] = it["text"]
         for slot in range(styles.MAX_SLOTS):
             for row in range(styles.PER_TONE):
@@ -2745,8 +2788,9 @@ class HudController(NSObject):
         r["text"].setStringValue_(text)
         self._set_progress(slot, row, None)
         for c in self._row_controls(slot, row):
-            c.setHidden_(False)
-        self._relayout()
+            c.setHidden_(row >= self._visible_rows(slot))
+        if row < self._visible_rows(slot):
+            self._relayout()
 
     def applyError_(self, text):
         self._show(automatic=True)         # never vanish without telling the user why
