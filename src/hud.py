@@ -2259,6 +2259,16 @@ class HudController(NSObject):
             self._analyzing = False
 
     @objc.python_method
+    def reload_generation_config(self):
+        """#147：设置保存后让生成层立即使用新配置（凭据/地址/模型）。
+
+        凭据在 Generator 里缓存过一次；清掉后下一个请求会重新按 env 解析。
+        判断层切换与候选数（面板行数启动时构建）仍按重启约定，见设置页说明。
+        """
+        self.generator.reload()
+        _log("生成配置已重载 · 下一个请求使用新配置")
+
+    @objc.python_method
     def reload_conversations(self):
         with self._context_lock:
             store = self.conversations

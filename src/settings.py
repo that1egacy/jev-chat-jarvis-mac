@@ -66,7 +66,7 @@ class SettingsController(NSObject):
             PALETTE["amber"].colorWithAlphaComponent_(0.18))
         restart_box.setFrame_(NSMakeRect(24, 530, 710, 34))
         view.addSubview_(restart_box)
-        restart_notice = self.label(view, "模型配置保存后重启 · 会话设置保存后立即生效",
+        restart_notice = self.label(view, "模型配置保存后立即生效 · 判断层切换与候选数需重启 · 会话设置立即生效",
                                     38, 536, 680, 20, 13, PALETTE["amber"])
         restart_notice.setFont_(A.NSFont.boldSystemFontOfSize_(13))
 
@@ -561,10 +561,21 @@ class SettingsController(NSObject):
                                or "请检查本地数据权限或磁盘空间后重试。") + "背景草稿仍保留。", "error")
             return
         model_changes = changes.keys() - context_changes.keys()
+        # #147：生成层改动写成会话覆盖，下一个请求立即按新配置走；判断层切换与候选数
+        # 仍需重启（前者涉及模型加载/卸载，后者的面板行数在启动时构建）。
+        for key, value in changes.items():
+            userconfig.session_override(key, value)
+        if model_changes and self.hud:
+            try:
+                self.hud.reload_generation_config()
+            except Exception:
+                pass
         if model_changes and not (context_changes or backgrounds):
-            self.set_status("已保存。请退出并重新打开应用；当前会话继续使用启动时的配置。", "success")
+            self.set_status("已保存并立即生效（判断层切换、候选数仍需重启）。", "success")
         else:
-            self.set_status("会话记录与背景已保存并生效。" + ("模型配置需退出并重新打开应用。" if model_changes else ""), "success")
+            self.set_status("会话记录与背景已保存并生效。"
+                            + ("模型配置已即时生效；判断层切换、候选数仍需重启。" if model_changes else ""),
+                            "success")
 
     def fetchModels_(self, sender):
         self.start_request(sender.tag(), True)

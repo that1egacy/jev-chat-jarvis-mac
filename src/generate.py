@@ -390,6 +390,10 @@ class Generator:
         self._creds: tuple[str, str, str] | None = None
         self._last_url = ""
 
+    def reload(self) -> None:
+        """丢弃缓存的凭据，下一个请求重新读取 env（#147 设置保存后即时生效）。"""
+        self._creds = None
+
     def _creds_or_load(self):
         if self._creds is None:
             base, key, model, _src, _api = load_credentials()

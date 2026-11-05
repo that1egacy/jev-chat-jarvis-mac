@@ -204,17 +204,31 @@ def provider(prefix: str) -> dict[str, str]:
     supplies the key also supplies base/model; other sources only fill the gaps.
     """
     key_name = f"{prefix}_API_KEY"
+    base_name, model_name = f"{prefix}_BASE_URL", f"{prefix}_MODEL"
+
+    def _base(fallback):
+        return _session_overrides.get(base_name) or fallback
+
+    def _model(fallback):
+        return _session_overrides.get(model_name) or fallback
+
+    # #147：设置页保存后写入 session_override，运行时切换配置要立刻生效——按字段覆盖，
+    # 因为用户可能只改地址/模型而密钥不变，整体回退会让改动看起来没生效。
+    if key_name in _session_overrides:
+        return {"key": _session_overrides[key_name],
+                "base": _base(get(base_name)),
+                "model": _model(get(model_name) or get("LLM_MODEL")),
+                "source": "设置页（本会话）"}
     for src, vals in _sources():
         if vals.get(key_name):
             return {
                 "key": vals[key_name],
-                "base": vals.get(f"{prefix}_BASE_URL") or get(f"{prefix}_BASE_URL"),
-                "model": (vals.get(f"{prefix}_MODEL") or get(f"{prefix}_MODEL")
-                          or get("LLM_MODEL")),
+                "base": _base(vals.get(base_name) or get(base_name)),
+                "model": _model(vals.get(model_name) or get(model_name) or get("LLM_MODEL")),
                 "source": src,
             }
-    return {"key": "", "base": get(f"{prefix}_BASE_URL"),
-            "model": get(f"{prefix}_MODEL") or get("LLM_MODEL"), "source": "none"}
+    return {"key": "", "base": _base(get(base_name)),
+            "model": _model(get(model_name) or get("LLM_MODEL")), "source": "none"}
 
 
 def load() -> dict[str, str]:
