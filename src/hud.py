@@ -792,6 +792,7 @@ class HudController(NSObject):
             ("YOLO 检测框", "toggleBoxes:", ""),
             ("固定在最前面", "toggleAlwaysOnTop:", ""),
             ("立即重新分析", "reanalyze:", ""),
+            ("打开控制台…", "openConsole:", "0"),
             ("模型设置…", "openSettings:", ","),
             ("校准区域…", "calibrateMessages:", ""),
             ("恢复自动识别区域", "clearCalibration:", ""),
@@ -843,9 +844,13 @@ class HudController(NSObject):
             dropdown.selectItemWithTitle_(self.slot_tones[slot])
 
     def sceneChanged_(self, sender):
-        """菜单切换场景：改白名单 + 话术；当前渠道不在白名单时按「离开」处理。"""
+        """菜单切换场景。"""
         keys = list(modes.MODES)
-        key = keys[sender.tag()]
+        self.apply_scene(keys[sender.tag()])
+
+    @objc.python_method
+    def apply_scene(self, key: str):
+        """切换场景：改白名单 + 话术；当前渠道不在白名单时按「离开」处理。"""
         if key == modes.active_key():
             return
         try:
@@ -860,6 +865,37 @@ class HudController(NSObject):
         app = getattr(self, "_app", None)
         if app is not None and not modes.allows(app.key):
             self._set_foreground_state(None)
+
+    @objc.python_method
+    def console_state(self) -> dict:
+        """给产品主界面用的只读状态快照。"""
+        app = getattr(self, "_app", None)
+        return {
+            "app_name": getattr(app, "display_name", None) or "—",
+            "scene_name": modes.active()["name"],
+            "panel_visible": bool(getattr(self, "panel", None) and self.panel.isVisible()),
+            "status_text": (self._normal_status[0] if self._normal_status else "—"),
+            "autoshow": bool(getattr(self, "_autoshow", False)),
+            "boxes": bool(getattr(self, "_show_boxes", False)),
+            "always_top": bool(getattr(self, "_always_on_top", False)),
+            "paused": bool(getattr(self, "_paused", False)),
+        }
+
+    def openConsole_(self, sender):
+        """菜单/ Dock 打开产品主界面：窗口显示期间切到 Regular（有 Dock 图标）。"""
+        from console_ui import build_console
+        if getattr(self, "console_controller", None) is not None:
+            self.console_controller.show()
+        else:
+            self.console_controller = build_console(self)
+        AppKit.NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
+        self.console_controller.show()
+
+    @objc.python_method
+    def on_console_closed(self):
+        """关闭主界面后不退出、也不撤销 Dock 身份：点 Dock 图标可重新打开。"""
+        _log("控制台已关闭 · 应用继续在 Dock 与菜单栏")
 
     @objc.python_method
     def _retire_calibration_results(self):
@@ -3026,6 +3062,22 @@ def main() -> None:
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
     warn_if_no_generation_key()
     controller = HudController.alloc().init()
+    # 产品形态：Dock 图标沿用 .app 的 AppIcon（从源码跑时也能有像样的图标）
+    class _AppDelegate(AppKit.NSObject):
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, flag):
+            controller.openConsole_(None)
+            return True
+
+        def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
+            return False
+
+    controller.app_delegate = _AppDelegate.alloc().init()
+    app.setDelegate_(controller.app_delegate)
+    icon_path = Path("/Applications/jev-jarvis.app/Contents/Resources/AppIcon.icns")
+    if icon_path.exists():
+        icon = AppKit.NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+        if icon is not None:
+            app.setApplicationIconImage_(icon)
     # First line of every run: which backends are actually in play. Support requests
     # always need it, and it proves the log is live before the first message arrives.
     _base, _key, _model, _src, _api = load_credentials()
