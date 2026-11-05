@@ -671,13 +671,9 @@ class HudController(NSObject):
 
         上限取「已填候选数」，否则没填满的行也会占位，组框就是一片空白。
         """
-        cap = styles.PER_TONE if slot in getattr(self, "_expanded_slots", set()) \
-            else min(COMPACT_ROWS, styles.PER_TONE)
-        base = slot * styles.PER_TONE
-        filled = sum(1 for row in range(styles.PER_TONE)
-                     if 0 <= base + row < len(self.cand_texts)
-                     and self.cand_texts[base + row] is not None)
-        return max(1, min(cap, filled)) if filled else 1
+        if slot in getattr(self, "_expanded_slots", set()):
+            return styles.PER_TONE       # 展开即预留全部行，数据流式到达时就地填充
+        return max(1, min(COMPACT_ROWS, styles.PER_TONE))
 
     def toggleSlotMore_(self, sender):
         slot = sender.tag()
@@ -742,9 +738,7 @@ class HudController(NSObject):
             for row in range(styles.PER_TONE):
                 r = self._rows[slot][row]
                 controls = self._row_controls(slot, row)
-                has = (0 <= base_tag + row < len(self.cand_texts)
-                       and self.cand_texts[base_tag + row] is not None)
-                if active and row < visible_rows and has:
+                if active and row < visible_rows:
                     for c in controls:
                         c.setHidden_(False)
                     # The candidate decides its own height. Short replies keep the compact
