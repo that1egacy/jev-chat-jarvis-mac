@@ -314,6 +314,9 @@ class HudController(NSObject):
         # either way the menu-bar item flips it at runtime
         self._show_boxes = userconfig.get("JEV_BOXES").strip().lower() in (
             "1", "true", "yes", "on")
+        # 有新消息时是否自动弹出面板；默认关，用户在菜单栏选择
+        self._autoshow = (userconfig.get("JEV_AUTOSHOW") or "0").strip().lower() in (
+            "1", "true", "on", "yes")
         self._last_risk = 0.0         # newest verdict's risk, for the overlay's highlight
         self._chat_title = ""
         self._asked_permission = False
@@ -354,6 +357,10 @@ class HudController(NSObject):
         self.panel.setTitle_("jev-jarvis")
         self.panel.setHidesOnDeactivate_(False)
         self.panel.setBecomesKeyOnlyIfNeeded_(True)
+        # 不要因为显示面板而切换桌面/Space：加入所有 Space，全屏应用上作为辅助窗浮着。
+        self.panel.setCollectionBehavior_(
+            AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary)
 
         # NSVisualEffectView is the native implementation of the reference's light frosted
         # material. The tint keeps text readable when the wallpaper behind it is busy.
@@ -589,6 +596,9 @@ class HudController(NSObject):
         self._ov_panel.setHasShadow_(False)
         self._ov_panel.setIgnoresMouseEvents_(True)   # never steal a click meant for the chat app
         self._ov_panel.setHidesOnDeactivate_(False)
+        self._ov_panel.setCollectionBehavior_(
+            AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary)
         self._ov_panel.setBackgroundColor_(NSColor.clearColor())
         view = _BoxesView.alloc().init()
         view.boxes = []
@@ -785,6 +795,7 @@ class HudController(NSObject):
             ("模型设置…", "openSettings:", ","),
             ("校准区域…", "calibrateMessages:", ""),
             ("恢复自动识别区域", "clearCalibration:", ""),
+            ("有新消息时自动显示", "toggleAutoshow:", ""),
         ):
             menu.addItemWithTitle_action_keyEquivalent_(title, action, key)
         # #153 场景预设：菜单切换（全局热键留给下一阶段）
@@ -800,6 +811,12 @@ class HudController(NSObject):
             item.setTarget_(self)
         self.pause_item = menu.itemArray()[1]
         self.boxes_item = menu.itemArray()[2]
+        self.autoshow_item = next(
+            (item for item in menu.itemArray()
+             if item.title() == "有新消息时自动显示"), None)
+        if self.autoshow_item is not None:
+            self.autoshow_item.setState_(
+                AppKit.NSOnState if self._autoshow else AppKit.NSOffState)
         self.always_on_top_item = menu.itemArray()[3]
         self.boxes_item.setState_(
             AppKit.NSOnState if self._show_boxes else AppKit.NSOffState)
@@ -1004,7 +1021,10 @@ class HudController(NSObject):
         return btn
 
     @objc.python_method
-    def _show(self):
+    def _show(self, automatic: bool = False):
+        """Show the panel; `automatic` = triggered by a read/judgment, gated by user choice."""
+        if automatic and not getattr(self, "_autoshow", False):
+            return
         if not self.panel.isVisible():
             self.panel.orderFrontRegardless()
 
@@ -1541,7 +1561,19 @@ class HudController(NSObject):
                          daemon=True).start()
 
     def collapsePanel_(self, sender):
+        if not self.panel.isVisible():
+            self._show()          # 用户手动打开：即使自动显示关着也照做
+            return
         self._set_collapsed(not self._collapsed)
+
+    def toggleAutoshow_(self, sender):
+        """有新消息时是否自动弹出面板；默认关，用户自己决定何时看。"""
+        self._autoshow = not self._autoshow
+        if getattr(self, "autoshow_item", None) is not None:
+            self.autoshow_item.setState_(
+                AppKit.NSOnState if self._autoshow else AppKit.NSOffState)
+        _log("自动显示已开启 · 有新消息时弹出面板" if self._autoshow
+             else "自动显示已关闭 · 仅在你打开面板时更新")
 
     def togglePause_(self, sender):
         self._paused = not self._paused
@@ -2587,7 +2619,7 @@ class HudController(NSObject):
         text, sender, prev = payload
         if self._collapsed:
             self._set_collapsed(False)      # 新消息必须看得见，收起只是临时腾地方
-        self._show()
+        self._show(automatic=True)
         self._render("status", "有新消息 · 等消息停稳…", PALETTE["muted"])
         self._render("message", text, PALETTE["muted"])   # grey: not analysed yet
         self._render("sender", self._context_line(sender, prev), PALETTE["muted"])
@@ -2596,7 +2628,7 @@ class HudController(NSObject):
         text, sender, prev = payload
         if self._collapsed:
             self._set_collapsed(False)
-        self._show()
+        self._show(automatic=True)
         self._render("status", "分析中…", PALETTE["muted"])
         self._render("message", text, PALETTE["text"])    # inked: this is the one
         self._render("sender", self._context_line(sender, prev), PALETTE["muted"])
@@ -2608,7 +2640,7 @@ class HudController(NSObject):
         v, sender, prev = payload
         if self._collapsed:
             self._set_collapsed(False)      # 预判终点直达这里，同样要展开
-        self._show()
+        self._show(automatic=True)
         # kept so a 话术 change can re-rank the new candidates against the same verdict
         self._last_intent = v.get("intent", "")
         self._last_risk = v.get("risk", 0)   # and so the overlay can badge the message
@@ -2681,7 +2713,7 @@ class HudController(NSObject):
         self._relayout()
 
     def applyError_(self, text):
-        self._show()                       # never vanish without telling the user why
+        self._show(automatic=True)         # never vanish without telling the user why
         self._render("status", text, PALETTE["red"])
 
     def applyStatus_(self, text):
@@ -2701,7 +2733,7 @@ class HudController(NSObject):
         """
         if self._app is None:
             return
-        self._show()                       # never vanish without telling the user why
+        self._show(automatic=True)         # never vanish without telling the user why
         self._render("status", text, PALETTE["red"])
 
     def applyWarmDone_(self, _payload):
@@ -3006,7 +3038,10 @@ def main() -> None:
         # the dropdown silently missing a tone the user typed is a support ticket; say
         # why it was refused and what a passing description looks like, once, at startup
         _log("自定义话术未加载 · " + "；".join(styles.REJECTED_TONES))
-    controller._show()
+    # 启动后不自动弹面板（也不切换桌面）：显示与否由用户从菜单栏决定。
+    # 想要「有新消息自动弹出」可设 JEV_AUTOSHOW=1 或点菜单项。
+    _log("面板已隐藏 · 菜单栏 J →「显示 / 收起面板」打开；"
+         "需要自动弹出可开「有新消息时自动显示」")
     # #38: ask a brand-new user how to judge BEFORE warming — the choice lands in
     # os.environ (and the env file), so the warm-up below honours it on this launch.
     controller.maybeOnboard_(None)
