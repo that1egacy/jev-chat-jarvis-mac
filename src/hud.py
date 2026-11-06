@@ -826,46 +826,89 @@ class HudController(NSObject):
 
     @objc.python_method
     def _install_status_item(self):
-        """Menu-bar item — the standard place for a background helper's controls."""
+        """Menu-bar item — the standard place for a background helper's controls.
+
+        结构：常用动作平铺，成组的开关/动作收进二级菜单（显示 / 操作 / 区域 / 场景），
+        避免下拉菜单里十几项平铺、每次都要扫一遍。
+        """
         bar = AppKit.NSStatusBar.systemStatusBar()
         self.status_item = bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
         self.status_item.button().setTitle_("J")
         self.status_item.button().setToolTip_("jev-jarvis · 聊天意图助手")
 
+        def top(title, action=None, key=""):
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, action, key)
+            if action:
+                item.setTarget_(self)
+            return item
+
+        def submenu(title):
+            parent = top(title)
+            child = AppKit.NSMenu.alloc().init()
+            parent.setSubmenu_(child)
+            return parent, child
+
         menu = AppKit.NSMenu.alloc().init()
-        for title, action, key in (
-            ("显示 / 收起面板", "collapsePanel:", ""),
-            ("暂停读屏", "togglePause:", ""),
-            ("YOLO 检测框", "toggleBoxes:", ""),
-            ("固定在最前面", "toggleAlwaysOnTop:", ""),
-            ("立即重新分析", "reanalyze:", ""),
-            ("控制台与设置…", "openSettings:", ","),
-            ("校准区域…", "calibrateMessages:", ""),
-            ("恢复自动识别区域", "clearCalibration:", ""),
-            ("有新消息时自动显示", "toggleAutoshow:", ""),
-            ("展开全部候选", "toggleAllSlots:", ""),
-        ):
-            menu.addItemWithTitle_action_keyEquivalent_(title, action, key)
-        # #153 场景预设：菜单切换（全局热键留给下一阶段）
+
+        # 1) 最高频：开关面板
+        menu.addItem_(top("显示 / 收起面板", "collapsePanel:"))
+
+        # 2) 场景（二级菜单，单选）
+        scene_parent, scene_menu = submenu("场景")
         self._scene_items = []
-        for index, (mode_key, mode) in enumerate(modes.MODES.items()):
-            item = menu.addItemWithTitle_action_keyEquivalent_(
-                f"场景：{mode['name']}", "sceneChanged:", "")
+        for index, (_key, mode) in enumerate(modes.MODES.items()):
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                mode["name"], "sceneChanged:", "")
             item.setTag_(index)
-            self._scene_items.append(item)
-        menu.addItem_(AppKit.NSMenuItem.separatorItem())
-        menu.addItemWithTitle_action_keyEquivalent_("退出 jev-jarvis", "quitApp:", "q")
-        for item in menu.itemArray():
             item.setTarget_(self)
-        self.pause_item = menu.itemArray()[1]
-        self.boxes_item = menu.itemArray()[2]
-        self.autoshow_item = next(
-            (item for item in menu.itemArray()
-             if item.title() == "有新消息时自动显示"), None)
-        if self.autoshow_item is not None:
-            self.autoshow_item.setState_(
-                AppKit.NSOnState if self._autoshow else AppKit.NSOffState)
-        self.always_on_top_item = menu.itemArray()[3]
+            scene_menu.addItem_(item)
+            self._scene_items.append(item)
+        menu.addItem_(scene_parent)
+
+        # 3) 显示开关（二级菜单）
+        display_parent, display_menu = submenu("显示选项")
+        self.autoshow_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "有新消息时自动显示", "toggleAutoshow:", "")
+        self.boxes_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "YOLO 检测框", "toggleBoxes:", "")
+        self.always_on_top_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "固定在最前面", "toggleAlwaysOnTop:", "")
+        for item in (self.autoshow_item, self.boxes_item, self.always_on_top_item):
+            item.setTarget_(self)
+            display_menu.addItem_(item)
+        menu.addItem_(display_parent)
+
+        # 4) 运行操作（二级菜单）
+        action_parent, action_menu = submenu("操作")
+        self.pause_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "暂停读屏", "togglePause:", "")
+        for title, action in (("立即重新分析", "reanalyze:"),
+                              ("展开全部候选", "toggleAllSlots:")):
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, action, "")
+            item.setTarget_(self)
+            action_menu.addItem_(item)
+        self.pause_item.setTarget_(self)
+        action_menu.insertItem_atIndex_(self.pause_item, 0)
+        menu.addItem_(action_parent)
+
+        # 5) 区域校准（二级菜单）
+        region_parent, region_menu = submenu("校准")
+        for title, action in (("校准区域…", "calibrateMessages:"),
+                              ("恢复自动识别区域", "clearCalibration:")):
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, action, "")
+            item.setTarget_(self)
+            region_menu.addItem_(item)
+        menu.addItem_(region_parent)
+
+        menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        menu.addItem_(top("控制台与设置…", "openSettings:", ","))
+        menu.addItem_(top("退出 jev-jarvis", "quitApp:", "q"))
+
+        self.autoshow_item.setState_(
+            AppKit.NSOnState if self._autoshow else AppKit.NSOffState)
         self.boxes_item.setState_(
             AppKit.NSOnState if self._show_boxes else AppKit.NSOffState)
         self.always_on_top_item.setState_(
