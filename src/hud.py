@@ -74,7 +74,7 @@ from perception import (  # noqa: E402
     screen_capture_ok,
     request_screen_capture,
 )
-from apps.registry import APPS, UNKNOWN, frontmost_app  # noqa: E402  按前台 App 分发（各支持平台）
+from apps.registry import APPS, UNKNOWN, frontmost_app, read_health_text  # noqa: E402  按前台 App 分发（各支持平台）
 import judge  # noqa: E402  (model_cached / model_disk_usage: the #38 onboarding + settings)
 from judge import LowMemoryError, ModelNotDownloadedError, make_judge  # noqa: E402
 from generate import BUILTIN_SOURCE, Generator, load_credentials  # noqa: E402
@@ -970,6 +970,8 @@ class HudController(NSObject):
             "boxes": bool(getattr(self, "_show_boxes", False)),
             "always_top": bool(getattr(self, "_always_on_top", False)),
             "paused": bool(getattr(self, "_paused", False)),
+            "read_health": read_health_text(getattr(self, "_read_ok_at", None),
+                                            getattr(app, "key", None)),
         }
 
     @objc.python_method
@@ -1849,6 +1851,11 @@ class HudController(NSObject):
         self._last_skip_reason = None
         self._read_fail_since = None
         self._read_fail_hidden = False
+        # 适配器健康：成功读到一次就记一次时间，控制台据此回答「上次成功是什么时候」
+        stamps = getattr(self, "_read_ok_at", None)
+        if stamps is None:
+            stamps = self._read_ok_at = {}
+        stamps[getattr(app, "key", "")] = time.time()
         self._empty_frame_since = None
 
         if app is None:
@@ -2015,6 +2022,11 @@ class HudController(NSObject):
 
         self._read_fail_since = None
         self._read_fail_hidden = False
+        # 适配器健康：成功读到一次就记一次时间，控制台据此回答「上次成功是什么时候」
+        stamps = getattr(self, "_read_ok_at", None)
+        if stamps is None:
+            stamps = self._read_ok_at = {}
+        stamps[getattr(app, "key", "")] = time.time()
 
         # Same fingerprint ⇒ same pixels ⇒ the messages are exactly what we last read.
         # Cadence follows the screen: quiet checks back in FAST_TICK (capture+hash only,
@@ -2224,28 +2236,39 @@ class HudController(NSObject):
 
             # --- anti-flood: track arrivals, never analyze mid-burst
             if reply_text != self.last_seen:
+                # 向上翻历史会换出更早的消息当「最新一条」；历史只追加，绝对位置变靠前
+                # 就说明是滚动而不是新消息，不能重判、更不能把旧消息当新目标。
+                scroll_skip = chat_context.scrolled_back(
+                    getattr(self, "_arrival_text", None), newest_index, msgs)
+                self._arrival_text = reply_text
                 self.last_seen = reply_text
                 self.last_change_ts = now
-                # only on arrival: this function runs every second, and a per-tick line would
-                # bury the timing that matters
-                t = res.get("timing_ms") or {}
-                first_read = not self._read_once
-                self._read_once = True
-                # Vision loads on the first call and costs ~2x steady state; saying so keeps a
-                # one-off from being read as a regression (same reason the judge line does it)
-                note = "（首次，含 Vision 加载）" if first_read and t.get("ocr", 0) > 400 else ""
-                _log(f"读屏 抓取 {t.get('capture', 0):.0f}ms + OCR {t.get('ocr', 0):.0f}ms"
-                     f"{' + 数字补识别 ' + str(round(t['recover'])) + 'ms' if t.get('recover') else ''}"
-                     f"{' + 分类 ' + str(round(t['classify'])) + 'ms' if t.get('classify') else ''}"
-                     f" = {t.get('total', 0):.0f}ms · 读到 {len(msgs)} 条（对方 {len(thems)} 条）"
-                     f"{note}")
-                _log(f"新消息 · 预判+生成先跑，停稳 {SETTLE_S}s（连续 {STABLE_READS} 跳不变最早 "
-                     f"{EARLY_SETTLE_S}s）后上屏（两次完整分析最小间隔 {MIN_GAP_S}s）")
-                # latest-wins: overwrite the slot, retire the old verdict — only the newest
-                # text's judgment can ever be consumed, and only by the settle gate below
-                self._enqueue_prework(newest, context, prev_text, reply_text)
-                # keep the previous verdict readable; just badge that something new landed
-                self._push("applyIncoming:", (reply_text, newest.sender, prev_text))
+                if scroll_skip:
+                    self._scroll_skip_text = reply_text
+                    _log("滚动历史（新目标在已知消息之前）· 不触发重判")
+                else:
+                    self._scroll_skip_text = None
+
+                    # only on arrival: this function runs every second, and a per-tick line would
+                    # bury the timing that matters
+                    t = res.get("timing_ms") or {}
+                    first_read = not self._read_once
+                    self._read_once = True
+                    # Vision loads on the first call and costs ~2x steady state; saying so keeps a
+                    # one-off from being read as a regression (same reason the judge line does it)
+                    note = "（首次，含 Vision 加载）" if first_read and t.get("ocr", 0) > 400 else ""
+                    _log(f"读屏 抓取 {t.get('capture', 0):.0f}ms + OCR {t.get('ocr', 0):.0f}ms"
+                         f"{' + 数字补识别 ' + str(round(t['recover'])) + 'ms' if t.get('recover') else ''}"
+                         f"{' + 分类 ' + str(round(t['classify'])) + 'ms' if t.get('classify') else ''}"
+                         f" = {t.get('total', 0):.0f}ms · 读到 {len(msgs)} 条（对方 {len(thems)} 条）"
+                         f"{note}")
+                    _log(f"新消息 · 预判+生成先跑，停稳 {SETTLE_S}s（连续 {STABLE_READS} 跳不变最早 "
+                         f"{EARLY_SETTLE_S}s）后上屏（两次完整分析最小间隔 {MIN_GAP_S}s）")
+                    # latest-wins: overwrite the slot, retire the old verdict — only the newest
+                    # text's judgment can ever be consumed, and only by the settle gate below
+                    self._enqueue_prework(newest, context, prev_text, reply_text)
+                    # keep the previous verdict readable; just badge that something new landed
+                    self._push("applyIncoming:", (reply_text, newest.sender, prev_text))
 
             # Anti-flood, two signals: the blind wait (SETTLE_S, unchanged upper bound) or a
             # content-stability early open — the pane went quiet for STABLE_READS consecutive
@@ -2259,7 +2282,9 @@ class HudController(NSObject):
             pre_hit = pr is not None and pr[0] == reply_text and pr[4] == self._reply_epoch
             # A pre-judged verdict needs no cooling: its cost was already paid per arrival.
             # Only the full path (no usable pre-judgment) still waits MIN_GAP_S out.
-            if (reply_text != self.analyzed_text and settled and not self._analyzing
+            if (reply_text != self.analyzed_text
+                    and reply_text != getattr(self, "_scroll_skip_text", None)
+                    and settled and not self._analyzing
                     and not self._prejudging and (pre_hit or cooled)):
                 self.last_analyze_ts = now
                 self.analyzed_text = reply_text

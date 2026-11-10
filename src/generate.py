@@ -123,6 +123,28 @@ def http_post_json(url: str, headers: dict, body: dict, timeout: float) -> dict:
     return _POOL.post_json(url, headers, body, timeout)
 
 
+DEFAULT_DEADLINE_S = 35.0     # 一次生成的总时长上限（秒），含流式读取全程
+MIN_DEADLINE_S, MAX_DEADLINE_S = 5.0, 120.0
+
+
+class RequestTimeout(Exception):
+    """总时长超过上限。
+
+    socket 的 read timeout 只管单次读：服务端每隔几秒发一个空字节保活时它永远不触发，
+    生成可以挂到天荒地老（Windows/Android 两端都踩过）。这里卡的是整个请求的墙钟。
+    """
+
+
+def _deadline_setting() -> float:
+    """JEV_GENERATE_DEADLINE 覆盖默认值；非法值退回默认，不让一个手滑的 env 卡死生成。"""
+    raw = userconfig.get("JEV_GENERATE_DEADLINE")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_DEADLINE_S
+    return value if MIN_DEADLINE_S <= value <= MAX_DEADLINE_S else DEFAULT_DEADLINE_S
+
+
 class ThinkingOnlyError(Exception):
     """A reasoning model spent the whole max_tokens budget thinking and wrote no text.
 
@@ -446,6 +468,16 @@ def _resolve_builtin_model(base: str) -> str:
     return _BUILTIN_MODEL
 
 
+def _builtin_disabled() -> bool:
+    """JEV_DISABLE_BUILTIN=1 时不用随包内置凭据。
+
+    内置那份是明文 HTTP 自建中转（见 src/builtin.py 顶部说明）：用户一个 key 都没配时
+    会悄悄把聊天正文发到公网明文端点。想完全不出网的人可以关掉它，宁可不生成。
+    """
+    raw = (userconfig.get("JEV_DISABLE_BUILTIN") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def load_credentials() -> tuple[str, str, str, str, str]:
     """Returns (base_url, api_key, model, source, api_format). Never raises.
 
@@ -468,7 +500,7 @@ def load_credentials() -> tuple[str, str, str, str, str]:
 
     # 两个都没配：回退到随包分发的内置凭据，让应用开箱就能出候选。位置在最后，
     # 所以内置永远不会盖掉用户显式配的那一组。
-    if builtin.API_KEY:
+    if builtin.API_KEY and not _builtin_disabled():
         return (builtin.BASE_URL, builtin.API_KEY, _resolve_builtin_model(builtin.BASE_URL),
                 BUILTIN_SOURCE, pick_api_format(builtin.BASE_URL, None))
 
@@ -541,6 +573,7 @@ class Generator:
         self.model_override = model
         self.api_override = api if api in ("openai", "anthropic") else None
         self.timeout = timeout
+        self.deadline_s = _deadline_setting()
         self._creds: tuple[str, str, str] | None = None
         self._last_url = ""
 
@@ -636,6 +669,7 @@ class Generator:
             url, data=json.dumps({**body, "stream": True}).encode(), headers=headers)
         content: list[str] = []
         reasoning: list[str] = []
+        deadline = time.monotonic() + self.deadline_s
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             ctype = (r.headers.get("content-type") or "").lower()
             if "event-stream" not in ctype:
@@ -643,6 +677,8 @@ class Generator:
                 # parse it the ordinary way instead of failing
                 return self._openai_json(json.load(r), model, alt)
             for raw_line in r:
+                if time.monotonic() > deadline:
+                    raise RequestTimeout(f"生成超时（{self.deadline_s:.0f} 秒）")
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line.startswith("data:"):
                     continue        # blank separators, "event:" lines, ": keep-alive"
@@ -736,6 +772,8 @@ class Generator:
             raw = self._call(prompt, on_delta if on_line is not None else None)
         except ThinkingOnlyError as e:
             return [], "模型仅返回思考内容，请关闭思考模式或更换模型"
+        except RequestTimeout:
+            return [], "生成超时，请重试或换一个更快的模型"
         except urllib.error.HTTPError as e:
             return [], f"HTTP {e.code}：请检查模型服务设置"
         except Exception as e:

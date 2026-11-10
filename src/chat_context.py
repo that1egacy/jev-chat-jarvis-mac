@@ -78,6 +78,21 @@ def _same_records(left, right) -> bool:
     return True
 
 
+def scrolled_back(previous_text, newest_index, messages) -> bool:
+    """判断这一帧的「最新一条」是不是往上翻历史翻出来的旧消息。
+
+    只在有确凿证据时返回 True：上次当作回复目标的那条**仍在画面里**，而这一帧的最新一条
+    排在它上面。旧消息滚出画面（真来了新消息，或翻得太多）都当作「不确定」→ 多分析一次，
+    绝不因为相似/位置猜错而把新消息吞掉。
+    """
+    if not previous_text:
+        return False
+    for index, message in enumerate(messages):
+        if getattr(message, "text", None) == previous_text:
+            return newest_index < index
+    return False
+
+
 def message_record(message):
     """Keep old three-field records unchanged; metadata belongs to its message."""
     base = (message.text, message.side, message.sender or "")

@@ -61,3 +61,20 @@ def app_by_key(key: str):
         if app.key == key:
             return app
     return None
+
+
+def read_health_text(stamps, key, now=None) -> str:
+    """控制台「上次成功读屏」文案；只用于诊断，不参与任何管线判断。"""
+    import time as _time
+    current = _time.time() if now is None else now
+    stamp = (stamps or {}).get(key)
+    if not stamp:
+        return "本次启动尚未成功读屏"
+    seconds = max(0.0, current - stamp)
+    if seconds < 5:
+        return "刚刚成功读屏"
+    if seconds < 60:
+        return f"上次成功读屏 {seconds:.0f}s 前"
+    if seconds < 3600:
+        return f"上次成功读屏 {seconds / 60:.0f} 分钟前"
+    return f"上次成功读屏 {seconds / 3600:.1f} 小时前"

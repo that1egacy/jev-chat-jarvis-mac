@@ -277,7 +277,8 @@ class SettingsController(NSObject):
         self.console_fields["flag2"].setStringValue_(
             "置顶：" + ("开" if state.get("always_top") else "关"))
         self.console_fields["flag3"].setStringValue_(
-            "读屏：" + ("已暂停" if state.get("paused") else "运行中"))
+            "读屏：" + ("已暂停" if state.get("paused") else "运行中")
+            + "（" + str(state.get("read_health", "—")) + "）")
         self.console_scene.setSelectedSegment_(list(modes.MODES).index(modes.active_key()))
         mapping = {"autoshow": state.get("autoshow"), "boxes": state.get("boxes"),
                    "pinned": state.get("always_top"), "paused": state.get("paused")}
