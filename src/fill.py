@@ -195,6 +195,22 @@ def locate_input(win):
     return result
 
 
+def read_draft(target) -> tuple[str, str]:
+    """只读：当前输入框里已有的草稿。返回 (text, reason)。
+
+    `target` 就是各适配器 `locate_input()` 的返回值；读不到时 text 为空、reason 说明原因
+    （没权限 / 不在当前窗口 / 控件不暴露文字）。绝不写入、不清空、不发送。
+    """
+    target = target or {}
+    box = target.get("box")
+    if box is None:
+        return "", target.get("reason") or REASON_NO_INPUT
+    value = _ax_value(box)
+    if value is None:
+        return "", "输入控件不暴露文字，读不到草稿"
+    return value.strip(), ""
+
+
 def _find_input_box(pid: int, window_rect=None):
     """WeChat's message input box, or None.
 

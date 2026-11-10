@@ -897,7 +897,8 @@ class HudController(NSObject):
         action_parent, action_menu = submenu("操作")
         self.pause_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "暂停读屏", "togglePause:", "")
-        for title, action in (("立即重新分析", "reanalyze:"),
+        for title, action in (("检查我的草稿", "checkDraft:"),
+                              ("立即重新分析", "reanalyze:"),
                               ("展开全部候选", "toggleAllSlots:")):
             item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 title, action, "")
@@ -1027,6 +1028,42 @@ class HudController(NSObject):
                                             getattr(app, "key", None)),
             "diag": dict(getattr(self, "_diag", None) or {}),
         }
+
+    # --- 草稿自查（只读输入框里我自己写的文字，复用判断层）
+    def checkDraft_(self, sender):
+        """菜单「操作 → 检查我的草稿」：读草稿、判意图/风险，结果进状态行。"""
+        threading.Thread(target=self._draft_check_work, daemon=True).start()
+
+    @objc.python_method
+    def _draft_check_work(self):
+        import draft_check
+        t0 = time.perf_counter()
+        try:
+            app = getattr(self, "_app", None)
+            window = getattr(self, "_input_window", None) or \
+                (self._last_full or {}).get("window")
+            if app is None or window is None:
+                self._push("applyDraftCheck:", "草稿自查：当前没有可读的聊天窗口")
+                return
+            target = app.locate_input(window)
+            text, reason = fill.read_draft(target)
+            if not text:
+                self._push("applyDraftCheck:", f"草稿自查：{reason or '输入框里没有草稿'}")
+                return
+            summary, error = draft_check.check(self.judge, text)
+            ms = (time.perf_counter() - t0) * 1000
+            # 只记耗时/结果，不记草稿正文
+            _log(f"草稿自查 {ms:.0f}ms · {'失败' if error else '完成'}")
+            self._push("applyDraftCheck:", error or summary)
+        except Exception as exc:                          # noqa: BLE001
+            _log(f"草稿自查异常 {type(exc).__name__}")
+            self._push("applyDraftCheck:", f"草稿自查失败：{type(exc).__name__}")
+
+    def applyDraftCheck_(self, summary):
+        if self._collapsed:
+            self._set_collapsed(False)
+        self._show(automatic=True)
+        self._render("status", summary or "草稿自查：没有结果", PALETTE["accent"])
 
     @objc.python_method
     def _retire_calibration_results(self):
