@@ -953,7 +953,38 @@ class HudController(NSObject):
         self.apply_scene(keys[sender.tag()])
 
     @objc.python_method
-    def apply_scene(self, key: str):
+    def _scene_memory(self):
+        """懒加载会话场景记忆；初始化失败时返回 None（记忆是锦上添花，不能拖垮主流程）。"""
+        memory = getattr(self, "_chat_memory", None)
+        if memory is None:
+            try:
+                import chat_scene_memory
+                memory = chat_scene_memory.ChatSceneMemory()
+            except Exception:                              # noqa: BLE001
+                memory = False
+            self._chat_memory = memory
+        return memory or None
+
+    @objc.python_method
+    def _restore_chat_scene(self, title: str) -> None:
+        """按会话记忆切回上次用的场景；用户没在该会话里显式切过就不动。"""
+        app = getattr(self, "_app", None)
+        if not title or app is None:
+            return
+        memory = self._scene_memory()
+        if memory is None:
+            return
+        try:
+            key = memory.recall(app.key, title)
+        except Exception:                                  # noqa: BLE001
+            return
+        if not key or key not in modes.MODES or key == modes.active_key():
+            return
+        _log(f"会话记忆 · 「{title}」切回场景 {modes.MODES[key]['name']}")
+        self.apply_scene(key, remember=False)
+
+    @objc.python_method
+    def apply_scene(self, key: str, remember: bool = True):
         """切换场景：改白名单 + 话术；当前渠道不在白名单时按「离开」处理。"""
         if key == modes.active_key():
             return
@@ -966,6 +997,15 @@ class HudController(NSObject):
         self._refresh_scene_items()
         self._relayout()
         _log(f"场景切换 · {mode['name']}（渠道 {'/'.join(mode['apps'])}）")
+        if remember:
+            # 用户显式选的场景跟着会话走：下次切回这个聊天自动套用（标题只存哈希）
+            app = getattr(self, "_app", None)
+            memory = self._scene_memory()
+            if memory is not None and app is not None and getattr(self, "_chat_title", ""):
+                try:
+                    memory.remember(app.key, self._chat_title, key)
+                except Exception:                          # noqa: BLE001
+                    pass
         app = getattr(self, "_app", None)
         if app is not None and not modes.allows(app.key):
             self._set_foreground_state(None)
@@ -2812,6 +2852,7 @@ class HudController(NSObject):
     def applyChat_(self, title):
         self._chat_title = title
         self._render("chat", title, PALETTE["accent"])
+        self._restore_chat_scene(title)
 
     def applyIncoming_(self, payload):
         # a new message landed but we are not analysing yet (burst in progress):
