@@ -85,7 +85,8 @@ class RegistryTests(unittest.TestCase):
         from apps import registry
         self.assertEqual(registry.app_by_key('qq').display_name, '聊天工具')
         self.assertIsNone(registry.app_by_key('feishu'))
-        self.assertEqual([a.key for a in registry.APPS], ['wechat', 'qq'])
+        # 本地补丁：注册了 WhatsApp 与 Apple Mail 两个渠道（上游只有 wechat/qq）。
+        self.assertEqual([a.key for a in registry.APPS], ['wechat', 'qq', 'whatsapp', 'mail'])
 
 
 if __name__ == '__main__':

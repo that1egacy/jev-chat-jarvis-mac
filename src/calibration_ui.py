@@ -96,11 +96,19 @@ class CalibrationController(NSObject):
     @objc.python_method
     # 纯原生窗口装配：依赖真聊天窗口/截图权限，离线回归只测文案常量与
     # 交互逻辑（见 tests/test_calibration_ui_copy.py），装配体本身不测。
-    def build(self, callback, saved='', image=None, win=None, saved_input=''):  # pragma: no cover
+    def build(self, callback, saved='', image=None, win=None, saved_input='',
+              finder=None, message_key='JEV_MESSAGE_REGION',
+              input_key='JEV_INPUT_REGION', preview_reader=None):  # pragma: no cover
         self.mode = 'messages'
         self.regions = {'messages': None, 'input': None}
         self.callback=callback; self.busy=False; self.preview=None; self.closed=False
-        self.win=win or find_wechat_window()
+        # 按当前聊天应用取窗口与保存键：默认仍是微信，保持旧行为
+        self.finder = finder or find_wechat_window
+        self.message_key = message_key
+        self.input_key = input_key
+        # 预览解析器：不同聊天应用的解析方式不同（微信气泡检测 / WhatsApp 文本几何）
+        self.preview_reader = preview_reader
+        self.win=win or self.finder()
         if self.win is None: raise ValueError('请先打开聊天窗口。')
         self.image=image if image is not None else capture_image(self.win.wid)
         if self.image is None:
@@ -232,7 +240,10 @@ class CalibrationController(NSObject):
         def run():
             try:
                 win=dict(wid=self.win.wid,w=self.win.w,h=self.win.h,x=self.win.x,y=self.win.y,title=self.win.title)
-                res=read_calibrated(self.image,c[0],win,100)
+                if self.preview_reader is not None:
+                    res=self.preview_reader(self.image,c[0],win)
+                else:
+                    res=read_calibrated(self.image,c[0],win,100)
                 result=(c,res,None)
             except Exception as e:result=(c,None,type(e).__name__)
             self.performSelectorOnMainThread_withObject_waitUntilDone_('previewDone:',result,False)
@@ -251,12 +262,12 @@ class CalibrationController(NSObject):
 
     def save_(self,sender):
         if self.preview is None or self.busy:return
-        current=find_wechat_window(self.win.wid)
+        current=self.finder(self.win.wid)
         if current is None or current.wid!=self.win.wid or not self.preview[0].matches(current):
             self.status.setStringValue_('聊天窗口已改变，请取消后重新校准。');return
         try:
-            write_settings(self.path,self.original,{'JEV_MESSAGE_REGION':self.preview[0].serialize(),
-                                                     'JEV_INPUT_REGION':self.preview[1].serialize()})
+            write_settings(self.path,self.original,{self.message_key:self.preview[0].serialize(),
+                                                     self.input_key:self.preview[1].serialize()})
         except (ValueError,OSError) as e:self.status.setStringValue_(str(e));return
         self.callback(self.preview,self.win.wid);self.closed=True;self.window.close()
 

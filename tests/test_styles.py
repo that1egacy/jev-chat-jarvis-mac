@@ -100,7 +100,9 @@ class GoutoujunshiToneTests(unittest.TestCase):
 
     def test_default_slots_untouched(self):
         # 恋爱向是场景自选，默认三件套仍是职场向，存量用户零感知
-        self.assertEqual(styles.DEFAULT_SLOTS, ["高情商话术", "贴吧老哥 v1.0", "阴阳怪气"])
+        # 本地补丁改过默认三格（见 docs/使用与排障.md §4.1）：上游默认是
+        # ["高情商话术", "贴吧老哥 v1.0", "阴阳怪气"]，本地是下面这一组。
+        self.assertEqual(styles.DEFAULT_SLOTS, ["高情商话术", "卑微乙方", "狗头军师会撩"])
 
 
 if __name__ == '__main__':

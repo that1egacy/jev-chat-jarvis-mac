@@ -30,6 +30,7 @@ def hud_harness():
              'applyReplyUpdate_', 'applyWaiting_', '_context_text', '_stream_hook',
              '_take_pregen', '_gen_with_pregen', '_finish_generate', '_enqueue_prework',
              '_prejudge_loop', '_pregen_loop', '_analyze', '_run_generation', 'reload_conversations',
+             'reload_generation_config',
              '_context_changed', 'save_background', 'configure_context', 'clear_history',
              '_regen_work', '_regenerate_work', 'regenerateReply_', '_rank_payload', '_payload_from_gen',
              'fillCandidate_', '_warm', '_warm_apps', 'toggleAlwaysOnTop_', 'tick_'}

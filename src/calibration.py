@@ -16,7 +16,7 @@ class Calibration:
         values = tuple(self.__dict__.values())
         if (not all(math.isfinite(v) for v in values)
                 or self.window_width <= 0 or self.window_height <= 0
-                or self.x < 0 or self.y <= 0 or self.width < 80 or self.height < 60
+                or self.x < 0 or self.y <= 0 or self.width < 40 or self.height < 24
                 or self.x + self.width > self.window_width
                 or self.y + self.height >= self.window_height):
             raise ValueError('请框选完整消息区，并排除标题和输入区。')

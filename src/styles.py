@@ -49,6 +49,18 @@ def validate_candidate_count(raw: str) -> int:
 
 PER_TONE = candidate_count(userconfig.get("JEV_CANDIDATES_PER_TONE"))
 
+
+def set_per_tone(value) -> int:
+    """#147：设置页保存后运行时改候选数（面板行由 hud 重建）。"""
+    global PER_TONE
+    PER_TONE = candidate_count(str(value))
+    return PER_TONE
+
+
+def refresh_candidates() -> int:
+    """从当前配置重读候选数。"""
+    return set_per_tone(userconfig.get("JEV_CANDIDATES_PER_TONE"))
+
 # label -> instruction. Order here is the order shown in the dropdowns.
 #
 # Each entry is written as a *persona plus its verbal tics*, not as a description of a mood.
@@ -79,6 +91,13 @@ BUILTIN: dict[str, str] = {
         "十年老工程师那种稳：不解释、不铺垫、不道歉，只给结论加一个时间点，句子短、"
         "主语是事不是情绪（「三点前给你」「已确认，没问题」），让对方觉得事情已经稳了。"
     ),
+    "狗头军师会撩": (
+        "表面是给建议的军师，实际每句都在撩：先抛一个像模像样的主意（「这局我有一计」），"
+        "紧接着用「要不」「不如」「这样」把话头拐到对方身上，夸人具体、带点坏心眼；"
+        "可自称「本军师」「臣」。禁止油腻直球、身体暗示和网图式土味，撩点到为止，"
+        "整句仍然能直接发出去。"
+    ),
+
     "已读乱回": (
         "敷衍但不失礼：一到六个字把对方接住（「在忙，你说」「嗯嗯」「好」），"
         "不承诺、不展开、不给时间点，让对方觉得回了又没法接着追问。"
@@ -131,7 +150,7 @@ BUILTIN: dict[str, str] = {
 # What the panel starts with. The third slot used to default to 不用; users were found
 # opening it and picking 阴阳怪气 by hand every session, so the default now ships it on —
 # hud.py caps the list at MAX_SLOTS, so this can grow without touching the panel build.
-DEFAULT_SLOTS: list[str] = ["高情商话术", "贴吧老哥 v1.0", "阴阳怪气"]
+DEFAULT_SLOTS: list[str] = ["高情商话术", "卑微乙方", "狗头军师会撩"]
 NONE_LABEL = "不用"          # the third dropdown's way of saying "only two candidates"
 
 CUSTOM_VAR = "JEV_TONES"     # env var holding user-defined tones
