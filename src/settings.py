@@ -183,11 +183,11 @@ class SettingsController(NSObject):
         card = ui_style.make_surface(12, PALETTE["surface"], PALETTE["edge"])
         card.setFrame_(NSMakeRect(12, 168, 666, 120))
         panel.addSubview_(card)
-        left = (("app", 92), ("scene", 68), ("panel", 44), ("status", 16))
+        left = (("app", 92), ("scene", 72), ("panel", 52), ("status", 32), ("diag", 12))
         for key, y in left:
             self.console_fields[key] = self.label(
                 card, "", 16, y, 360, 20, 12,
-                PALETTE["muted"] if key == "status" else PALETTE["text"])
+                PALETTE["text"] if key in ("app", "scene", "panel") else PALETTE["muted"])
         right = (("flag0", 92), ("flag1", 68), ("flag2", 44), ("flag3", 20))
         for key, y in right:
             self.console_fields[key] = self.label(card, "", 400, y, 240, 18, 11,
@@ -270,6 +270,11 @@ class SettingsController(NSObject):
         self.console_fields["panel"].setStringValue_(
             "面板：" + ("显示中" if state.get("panel_visible") else "隐藏（菜单栏可开）"))
         self.console_fields["status"].setStringValue_(f"最近状态：{state.get('status_text', '—')}")
+        diag = state.get("diag") or {}
+        self.console_fields["diag"].setStringValue_(
+            "本次：读屏 {} · 判读 {}（预判命中 {}）· 滚动跳过 {} · 生成失败 {}".format(
+                diag.get("read", 0), diag.get("analyze", 0), diag.get("prejudge_hit", 0),
+                diag.get("scroll_skip", 0), diag.get("gen_fail", 0)))
         self.console_fields["flag0"].setStringValue_(
             "自动显示：" + ("开" if state.get("autoshow") else "关"))
         self.console_fields["flag1"].setStringValue_(

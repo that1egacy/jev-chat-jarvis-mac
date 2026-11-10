@@ -1,8 +1,8 @@
 """生成总超时、滚动历史门、内置明文中转开关、适配器健康文案。"""
-import types
 import unittest
 from unittest.mock import patch
 
+import chat_context
 import generate
 from apps import registry
 
@@ -57,28 +57,24 @@ class DeadlineTests(unittest.TestCase):
 
 class ScrollGateTests(unittest.TestCase):
     @staticmethod
-    def _msgs(*texts):
-        return [types.SimpleNamespace(text=text) for text in texts]
+    def _history(*texts):
+        return [(text, 'them', '') for text in texts]
 
-    def test_new_message_below_the_previous_one_is_not_scroll(self):
-        messages = self._msgs('一', '二', '三')
-        self.assertFalse(chat_context_scrolled('二', 2, messages))
+    def test_new_target_after_previous_is_not_scroll(self):
+        self.assertFalse(chat_context.scrolled_back(self._history('一', '二', '三'), '二', '三'))
 
-    def test_older_target_above_the_previous_one_is_scroll(self):
-        messages = self._msgs('一', '二', '三')
-        self.assertTrue(chat_context_scrolled('三', 1, messages))
+    def test_earlier_target_is_scroll(self):
+        self.assertTrue(chat_context.scrolled_back(self._history('一', '二', '三'), '三', '二'))
 
-    def test_previous_message_out_of_view_is_never_guessed_as_scroll(self):
-        messages = self._msgs('十一', '十二', '十三')
-        self.assertFalse(chat_context_scrolled('三', 2, messages))
+    def test_unknown_or_merged_texts_never_guess_as_scroll(self):
+        self.assertFalse(chat_context.scrolled_back(self._history('一', '二'), '九', '二'))
+        self.assertFalse(chat_context.scrolled_back(self._history('一', '二'), '二', '合并\n文本'))
+        self.assertFalse(chat_context.scrolled_back([], '一', '二'))
 
-    def test_no_previous_target_means_not_scroll(self):
-        self.assertFalse(chat_context_scrolled(None, 0, self._msgs('一')))
-
-
-def chat_context_scrolled(previous_text, newest_index, messages):
-    import chat_context
-    return chat_context.scrolled_back(previous_text, newest_index, messages)
+    def test_repeated_text_uses_its_last_position(self):
+        history = self._history('好', '一', '好', '二')
+        # 两条「好」都取最后一次出现的位置（索引 2），所以「二」->「好」是往回翻
+        self.assertTrue(chat_context.scrolled_back(history, '二', '好'))
 
 
 class BuiltinSwitchTests(unittest.TestCase):

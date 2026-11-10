@@ -124,7 +124,20 @@ CAND_ROW_GAP = 3
 # is only as tall as the groups in use, so nothing is reserved for a tone that is switched
 # off (that reservation is what used to leave a dead gap in the middle).
 TONE_DD_X, TONE_DD_W, TONE_DD_H, TONE_DD_GAP = 20, PANEL_W - 40, 24, 5
-COMPACT_ROWS = 1          # 每组默认只显示前几条候选；其余点「更多」展开
+def _compact_rows_setting() -> int:
+    """JEV_COMPACT_ROWS：每组默认显示几条候选（1—PER_TONE，默认 1）。
+
+    面板高度跟着这个数走：设成 2 就默认显示前两条、其余仍可「更多」展开。
+    """
+    raw = userconfig.get("JEV_COMPACT_ROWS")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return value if 1 <= value <= styles.PER_TONE else 1
+
+
+COMPACT_ROWS = _compact_rows_setting()   # 每组默认只显示前几条候选；其余点「更多」展开
 TONE_DD_INSET = 8         # the popup sits this far inside its field, like text in an input box
 TONE_DD_FONT = 12         # compact but still the clearest interactive label in each group
                           # thing on the panel the user is meant to click
@@ -972,6 +985,7 @@ class HudController(NSObject):
             "paused": bool(getattr(self, "_paused", False)),
             "read_health": read_health_text(getattr(self, "_read_ok_at", None),
                                             getattr(app, "key", None)),
+            "diag": dict(getattr(self, "_diag", None) or {}),
         }
 
     @objc.python_method
@@ -1856,6 +1870,10 @@ class HudController(NSObject):
         if stamps is None:
             stamps = self._read_ok_at = {}
         stamps[getattr(app, "key", "")] = time.time()
+        diag = getattr(self, "_diag", None)
+        if diag is None:
+            diag = self._diag = {}
+        diag["read"] = diag.get("read", 0) + 1
         self._empty_frame_since = None
 
         if app is None:
@@ -2027,6 +2045,10 @@ class HudController(NSObject):
         if stamps is None:
             stamps = self._read_ok_at = {}
         stamps[getattr(app, "key", "")] = time.time()
+        diag = getattr(self, "_diag", None)
+        if diag is None:
+            diag = self._diag = {}
+        diag["read"] = diag.get("read", 0) + 1
 
         # Same fingerprint ⇒ same pixels ⇒ the messages are exactly what we last read.
         # Cadence follows the screen: quiet checks back in FAST_TICK (capture+hash only,
@@ -2238,13 +2260,21 @@ class HudController(NSObject):
             if reply_text != self.last_seen:
                 # 向上翻历史会换出更早的消息当「最新一条」；历史只追加，绝对位置变靠前
                 # 就说明是滚动而不是新消息，不能重判、更不能把旧消息当新目标。
+                # 用「最后一条对方消息」的原文比对，而不是 reply_text：后者是 #148 组归并后
+                # 的合并文本，历史里逐条保存，找不到就无法判断先后。
+                history = (self.conversations.history(res.get("chat_title"))
+                           if self.conversations is not None else [])
                 scroll_skip = chat_context.scrolled_back(
-                    getattr(self, "_arrival_text", None), newest_index, msgs)
-                self._arrival_text = reply_text
+                    history, getattr(self, "_arrival_text", None), newest.text)
+                self._arrival_text = newest.text
                 self.last_seen = reply_text
                 self.last_change_ts = now
                 if scroll_skip:
                     self._scroll_skip_text = reply_text
+                    diag = getattr(self, "_diag", None)
+                    if diag is None:
+                        diag = self._diag = {}
+                    diag["scroll_skip"] = diag.get("scroll_skip", 0) + 1
                     _log("滚动历史（新目标在已知消息之前）· 不触发重判")
                 else:
                     self._scroll_skip_text = None
@@ -2290,7 +2320,11 @@ class HudController(NSObject):
                 self.analyzed_text = reply_text
                 self._prejudge_result = None      # spent: a verdict is shown exactly once
                 self._analyzing = True
+                diag = getattr(self, "_diag", None)
+                if diag is None:
+                    diag = self._diag = {}
                 if pre_hit:
+                    diag["prejudge_hit"] = diag.get("prejudge_hit", 0) + 1
                     # Judgment already ran inside the settle window; go straight to the
                     # verdict on screen and start only the generation half.
                     _log(f"停稳 · 用预判结论上屏 · 这条消息出现到现在 {now - self.last_change_ts:.1f}s")
@@ -2300,6 +2334,7 @@ class HudController(NSObject):
                                            newest, msgs, pr[1], reply_text, group_start),
                                      daemon=True).start()
                 else:
+                    diag["analyze"] = diag.get("analyze", 0) + 1
                     _log(f"开始分析 · 这条消息出现到现在 {now - self.last_change_ts:.1f}s")
                     self._push("applyPending:", (reply_text, newest.sender, prev_text))
                     # off the tick path on purpose: judge+generate+rank takes over a second, and
@@ -2687,6 +2722,11 @@ class HudController(NSObject):
             return
         groups = gen.get("groups") or []
         failed = [str(g["slot"]) for g in groups if g.get("error")]
+        if failed:
+            diag = getattr(self, "_diag", None)
+            if diag is None:
+                diag = self._diag = {}
+            diag["gen_fail"] = diag.get("gen_fail", 0) + len(failed)
         _log(f"生成 {gen.get('elapsed_s', 0) * 1000:.0f}ms{note} · {len(groups)} 个话术并发"
              f" → {sum(len(g['texts']) for g in groups)} 条候选"
              + (f" · 失败: {'; '.join(failed)}" if failed else ""))

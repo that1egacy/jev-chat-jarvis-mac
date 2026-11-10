@@ -78,19 +78,29 @@ def _same_records(left, right) -> bool:
     return True
 
 
-def scrolled_back(previous_text, newest_index, messages) -> bool:
-    """判断这一帧的「最新一条」是不是往上翻历史翻出来的旧消息。
+def scrolled_back(history, previous_text, current_text) -> bool:
+    """这一帧的回复目标是不是历史里比上一帧更早的消息（用户往上翻历史）。
 
-    只在有确凿证据时返回 True：上次当作回复目标的那条**仍在画面里**，而这一帧的最新一条
-    排在它上面。旧消息滚出画面（真来了新消息，或翻得太多）都当作「不确定」→ 多分析一次，
-    绝不因为相似/位置猜错而把新消息吞掉。
+    用会话历史里的先后顺序判断，而不是画面内的位置：翻一页之后上一条通常已经滚出
+    可视区，按位置判会漏；历史只追加不重排，顺序是可靠的。两条文本都在历史里且
+    当前的排在上一帧之前，才算滚动——拿不准（历史为空/文本被合并/新会话）一律返回
+    False，宁可多分析一次，也不吞掉真消息。
     """
-    if not previous_text:
+    if not history or not previous_text or not current_text:
         return False
-    for index, message in enumerate(messages):
-        if getattr(message, "text", None) == previous_text:
-            return newest_index < index
-    return False
+
+    def last_index(text):
+        found = None
+        for index, record in enumerate(history):
+            if record[0] == text:
+                found = index
+        return found
+
+    previous_index = last_index(previous_text)
+    current_index = last_index(current_text)
+    if previous_index is None or current_index is None:
+        return False
+    return current_index < previous_index
 
 
 def message_record(message):
