@@ -47,15 +47,21 @@ BIDI = "\u200e\u200f\u202a\u202b\u202c"
 
 
 def _attr(el, name):
-    err, value = AS.AXUIElementCopyAttributeValue(el, name, None)
+    """Read one AX attribute; any error becomes None (the probe never raises)."""
+    try:
+        err, value = AS.AXUIElementCopyAttributeValue(el, name, None)
+    except Exception:                                  # noqa: BLE001
+        return None
     return value if err == 0 else None
 
 
 def _clean(name: str) -> str:
+    """Strip bidi marks around owner/title names (WhatsApp prepends U+200E)."""
     return (name or "").strip().strip(BIDI + " ")
 
 
 def _running(bundle: str):
+    """The running NSRunningApplication for `bundle`, or None when not running."""
     apps = AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(bundle)
     return apps[0] if apps else None
 
@@ -76,50 +82,75 @@ def _walk(el, depth: int, acc: dict, budget: list[int]) -> None:
                 break
     if role in INPUT_ROLES:
         acc["n_inputs"] += 1
+        # 文本区 != 可写输入控件：文档区、只读预览也可能是 AXTextArea，
+        # 只有 AXValue 可 set 才算「能填入」。注意这与 src/fill.py 不是同一判据：
+        # fill.py 选面积最大的 AXTextArea，再靠「写入后读回」确认，从不查 settable；
+        # 这里是静态可写性推断，结论可能比实际填入更宽松。
+        try:
+            result = AS.AXUIElementIsAttributeSettable(el, AS.kAXValueAttribute, None)
+            settable = result[1] if isinstance(result, tuple) else bool(result)
+        except Exception:                              # noqa: BLE001
+            settable = False
+        if settable:
+            acc["n_writable_inputs"] += 1
     for child in _attr(el, AS.kAXChildrenAttribute) or []:
         _walk(child, depth + 1, acc, budget)
 
 
 def probe_ax(bundle: str, dump: bool) -> dict:
+    """Read the target application's already-exposed AX tree (read-only, no writes)."""
     app = _running(bundle)
     if app is None:
         return {"ok": False, "reason": "应用未运行"}
 
     pid = app.processIdentifier()
     element = AS.AXUIElementCreateApplication(pid)
-    err_before, windows_before = AS.AXUIElementCopyAttributeValue(
-        element, AS.kAXWindowsAttribute, None)
-
-    # Electron 系应用只有设了 AXManualAccessibility 才暴露树；Catalyst 不一定买账，
-    # 所以这里前后各统计一次，结论以「设置之后」为准并保留前后对照。
-    manual_ok = None
+    # 纯只读：不写 AXManualAccessibility，也不改目标应用的任何状态。
+    # 因此这里看到的是应用「已经暴露」的 AX 树；Electron 应用可能需要用户在别处
+    # 主动开启无障碍树，窗口数为 0 只是「当前没暴露」，不能当作不支持 AX 的结论。
     try:
-        manual_ok = AS.AXUIElementSetAttributeValue(
-            element, "AXManualAccessibility", True) == 0
-        if manual_ok:
-            time.sleep(0.5)
-    except Exception:                     # noqa: BLE001  老系统可能没有这个属性
-        manual_ok = False
-
-    err_after, windows_after = AS.AXUIElementCopyAttributeValue(
-        element, AS.kAXWindowsAttribute, None)
-    windows = windows_after or []
+        err, windows = AS.AXUIElementCopyAttributeValue(
+            element, AS.kAXWindowsAttribute, None)
+    except Exception as exc:                            # noqa: BLE001
+        # 调用本身抛异常（目标退出 / 权限被拒 / pyobjc 桥接失败）与「成功读到 0 个窗口」
+        # 是两件事，单独报告；不要让 traceback 从 probe 里冒出去。
+        # 只记异常类型、不记异常消息：消息里可能带目标应用的标识（联系人/账号），
+        # 其余字段也刻意不落聊天内容。
+        return {
+            "pid": pid,
+            "ok": False,
+            "ax_error": None,
+            "ax_exception": type(exc).__name__,
+            "ax_windows": 0,
+            "windows": [],
+            "reason": ("AX 接口调用抛异常：检查辅助功能权限与目标应用状态；"
+                       "这不是「不支持 AX」的证据"),
+        }
+    windows = windows or []
 
     report = {
         "pid": pid,
-        "ax_windows_before": len(windows_before or []),
-        "ax_windows_after": len(windows),
-        "ax_manual_accessibility": manual_ok,
+        "ax_error": err,
+        "ax_exception": None,
+        "ax_windows": len(windows),
         "windows": [],
     }
+    if err != 0:
+        # 接口调用失败（无权限 / 目标无响应 / 应用正在退出）与「成功读到 0 个窗口」
+        # 是两件事：前者不能用来判断 AX 是否可用。
+        report["ok"] = False
+        report["reason"] = (f"AX 接口读取失败（err={err}）：检查辅助功能权限与目标应用状态；"
+                            "这不是「不支持 AX」的证据")
+        return report
     if not windows:
         report["ok"] = False
-        report["reason"] = (f"AX 窗口数为 0（err before={err_before}, after={err_after}）："
-                            "先确认主窗口已打开并置于前台，再重跑；仍为 0 才是真的不支持 AX")
+        report["reason"] = ("AX 接口正常但当前没有暴露窗口：先确认主窗口已打开并置于前台；"
+                            "仍为 0 只说明当前未暴露 AX 树，不等于不支持 AX")
         return report
 
     for index, win in enumerate(windows[:3]):
-        acc = {"roles": Counter(), "n_text": 0, "max_text_len": 0, "n_inputs": 0}
+        acc = {"roles": Counter(), "n_text": 0, "max_text_len": 0,
+               "n_inputs": 0, "n_writable_inputs": 0}
         _walk(win, 0, acc, [MAX_NODES])
         entry = {
             "index": index,
@@ -129,6 +160,7 @@ def probe_ax(bundle: str, dump: bool) -> dict:
             "n_text_nodes": acc["n_text"],
             "max_text_len": acc["max_text_len"],
             "n_input_controls": acc["n_inputs"],
+            "n_writable_inputs": acc["n_writable_inputs"],
         }
         if dump:
             entry["roles"] = dict(acc["roles"].most_common(12))
@@ -203,6 +235,7 @@ def probe_capture(windows: list[dict]) -> dict:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: parse args, run the read-only probes, print report and verdict."""
     if len(argv) < 2 or argv[1].startswith("-"):
         print(__doc__.strip().splitlines()[2].strip())
         return 2
@@ -242,18 +275,25 @@ def main(argv: list[str]) -> int:
     ax = report["ax"]
     if not report["accessibility_trusted"]:
         verdict = "AX 未授权：先在系统设置里给本进程开辅助功能权限，再重跑"
-    elif ax.get("ax_windows_after") == 0:
-        verdict = ("AX 未被测通（窗口数 0）：先确认目标应用主窗口已打开并置于前台；"
-                   "仍为 0 才判定 AX 路不通")
+    elif ax.get("ax_exception"):
+        verdict = (f"AX 接口调用异常（{ax.get('ax_exception')}）：检查辅助功能权限/目标应用；"
+                   "这不代表 AX 路不通")
+    elif ax.get("ax_error") not in (None, 0):
+        verdict = (f"AX 接口读取失败（err={ax.get('ax_error')}）：检查辅助功能权限/目标应用；"
+                   "这不代表 AX 路不通") + (f"（原因：{ax.get('reason')}）" if ax.get("reason") else "")
+    elif ax.get("ax_windows") == 0:
+        verdict = ("AX 窗口数 0：先确认目标应用主窗口已打开并置于前台；"
+                   "仍为 0 只说明当前未暴露 AX 树，不等于 AX 路不通")
     elif not ax.get("ok"):
-        verdict = f"AX 不可读 → 转截图 OCR；主窗口：" + (
+        verdict = "AX 不可读 → 转截图 OCR；主窗口：" + (
             f"{titled[0]['wid']} {titled[0]['w']}x{titled[0]['h']}" if titled
             else "（未找到带标题的窗口）") + f"；AX 原因：{ax.get('reason')}"
-    elif (ax.get("windows") or [{}])[0].get("n_input_controls", 0) == 0:
-        verdict = ("AX 可读但窗口里没有输入控件：读屏可走 AX，填入需视觉/剪贴板兜底"
-                   f"（AX 原因：{ax.get('reason')}）"
-                   if ax.get("reason") else
-                   "AX 可读但窗口里没有输入控件：读屏可走 AX，填入需视觉/剪贴板兜底")
+    elif (ax.get("windows") or [{}])[0].get("n_writable_inputs", 0) == 0:
+        total_inputs = (ax.get("windows") or [{}])[0].get("n_input_controls", 0)
+        verdict = (f"AX 可读但无可写输入控件（文本区 {total_inputs} 个，AXValue 均不可 set）："
+                   "读屏可走 AX，填入需视觉/剪贴板兜底")
+        if ax.get("reason"):
+            verdict += f"（AX 原因：{ax['reason']}）"
     else:
         verdict = "AX 可读 → 可写 AX 适配器（填入优先 AX 写入 + 读回）"
     report["verdict"] = verdict
@@ -262,6 +302,7 @@ def main(argv: list[str]) -> int:
 
 
 def _emit(report: dict, as_json: bool) -> None:
+    """Print the report as JSON (`--json`) or as fixed-width human-readable lines."""
     if as_json:
         print(json.dumps(report, ensure_ascii=False, indent=1))
         return
@@ -273,13 +314,15 @@ def _emit(report: dict, as_json: bool) -> None:
     print(f"AX trusted        {report['accessibility_trusted']}")
     print(f"screen capture    {report['screen_capture_allowed']}")
     ax = report["ax"]
-    print(f"AX windows        before={ax.get('ax_windows_before')} "
-          f"after={ax.get('ax_windows_after')} "
-          f"manual={ax.get('ax_manual_accessibility')}")
+    err = ax.get("ax_error")
+    print(f"AX windows        {ax.get('ax_windows')}（只读，未写入目标应用）"
+          + (f" · err={err}" if err not in (None, 0) else "")
+          + (f" · exception={ax['ax_exception']}" if ax.get("ax_exception") else ""))
     for w in ax.get("windows", []):
         print(f"  win#{w['index']} role={w['role']} children={w['children']} "
               f"text_nodes={w['n_text_nodes']} max_text_len={w['max_text_len']} "
-              f"inputs={w['n_input_controls']} title_chars={w['title_chars']}")
+              f"inputs={w['n_input_controls']} writable={w['n_writable_inputs']} "
+              f"title_chars={w['title_chars']}")
         if "roles" in w:
             print(f"    roles {w['roles']}")
     print(f"CG windows        {len(report['cgwindows'])}")

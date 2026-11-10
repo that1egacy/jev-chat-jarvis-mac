@@ -694,7 +694,10 @@ def read_calibrated(image, calibration, window, max_messages=12, capture_ms=0.0,
     t0 = time.perf_counter()
     x,y,w,h = calibration.rect()
     layout = (window['wid'], window['w'], window['h'], calibration.serialize())
-    fingerprint = _fingerprint(image, region=(x, y, w, 1.0 - y))
+    # Calibration.rect() 是「窗口顶部原点」（read_calibrated 里用 1-y-h 换算后喂 Vision），
+    # 而 _fingerprint(region=) 收的是底原点：要覆盖「窗口顶部 → 消息区底边」，
+    # 底原点区域应是 (x, 1-y-h, w, y+h)，否则漏掉底部新消息、或多算输入区。
+    fingerprint = _fingerprint(image, region=(x, 1.0 - y - h, w, y + h))
     if layout == prev_layout and _same_frame(fingerprint, prev_fingerprint):
         total = (time.perf_counter() - t0) * 1000
         return {"ok": True, "unchanged": True, "messages": [], "fingerprint": fingerprint,

@@ -1,7 +1,6 @@
 """Local conversation data and one bounded model input shared by every reply path."""
 from __future__ import annotations
 
-import difflib
 import re
 
 CONTEXT_CHARS = 8192
@@ -53,13 +52,16 @@ def _similar_text(old: str, new: str) -> bool:
     # 数字是信息不是噪声：序号/时间/金额差一位就是另一条消息（「项086」「片段10」）。
     if re.findall(r"\d+", old) != re.findall(r"\d+", new):
         return False
-    # 等长且只差一个字（位移/形近字抖动）：典型 OCR 噪声。
-    if len(old) == len(new) and sum(1 for a, b in zip(old, new) if a != b) == 1:
-        return True
-    # 更长才用相似度：短字符串的比例对增删一个字过于敏感。
-    if min(len(old), len(new)) >= 6:
-        return difflib.SequenceMatcher(None, old, new).ratio() >= .75
-    return False
+    # 只容忍「等长且恰好一个字符不同」的形近字抖动。不做相似度比例判断：
+    # 「今天下午可以开会」与「明天下午可以开会」只差一字却是另一条消息。
+    if len(old) != len(new):
+        return False
+    diffs = [(a, b) for a, b in zip(old, new) if a != b]
+    if len(diffs) != 1:
+        return False
+    # 否定词/时间词差一个就是语义反转，不能当噪声。
+    high_info = set("不没别未勿没今明昨早晚上下午")
+    return not any(a in high_info or b in high_info for a, b in diffs)
 
 
 def _same_records(left, right) -> bool:
@@ -89,18 +91,15 @@ def scrolled_back(history, previous_text, current_text) -> bool:
     if not history or not previous_text or not current_text:
         return False
 
-    def last_index(text):
-        found = None
-        for index, record in enumerate(history):
-            if record[0] == text:
-                found = index
-        return found
+    def positions(text):
+        return [index for index, record in enumerate(history) if record[0] == text]
 
-    previous_index = last_index(previous_text)
-    current_index = last_index(current_text)
-    if previous_index is None or current_index is None:
+    previous_positions = positions(previous_text)
+    current_positions = positions(current_text)
+    # 同一句话在历史里出现多次时，无法确定画面上是哪一次 —— 按「拿不准不跳过」处理。
+    if len(previous_positions) != 1 or len(current_positions) != 1:
         return False
-    return current_index < previous_index
+    return current_positions[0] < previous_positions[0]
 
 
 def message_record(message):

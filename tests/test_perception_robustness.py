@@ -1,6 +1,6 @@
 """感知层鲁棒性：OCR 抖动容错、手动校准路径的指纹短路、气泡底色第二证据。"""
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import Quartz as Q
 
@@ -27,6 +27,11 @@ class SimilarTextTests(unittest.TestCase):
     def test_one_character_ocr_jitter_on_same_length_text_is_tolerated(self):
         self.assertTrue(chat_context._similar_text('不好意思', '不好竟思'))
         self.assertTrue(chat_context._similar_text('明天下午三点开会', '明天下午三点开会'))
+
+    def test_high_information_character_changes_are_never_noise(self):
+        self.assertFalse(chat_context._similar_text('今天下午可以开会', '明天下午可以开会'))
+        self.assertFalse(chat_context._similar_text('可以去', '不去'))
+        self.assertFalse(chat_context._similar_text('早上九点见', '晚上九点见'))
 
     def test_digit_changes_are_never_noise(self):
         self.assertFalse(chat_context._similar_text('项086', '项087'))
@@ -60,13 +65,13 @@ class ObserveContinuityTests(unittest.TestCase):
 
 
 class CalibratedFingerprintTests(unittest.TestCase):
-    def _read(self, image, **kwargs):
+    def _read(self, image, ocr=None, **kwargs):
+        ocr = ocr or Mock(return_value=[block('测试群', 230, 20, 80),
+                                        block('你好', 300, 300, 60)])
         with patch.object(perception, 'find_wechat_window', return_value=_window()), \
              patch.object(perception, 'capture_window', return_value=True), \
              patch.object(perception, '_load_png_image', return_value=image), \
-             patch.object(perception, 'ocr_image',
-                          return_value=[block('测试群', 230, 20, 80),
-                                        block('你好', 300, 300, 60)]):
+             patch.object(perception, 'ocr_image', ocr):
             return perception.read_conversation(calibration=_calibration(), **kwargs)
 
     def test_unchanged_calibrated_frame_skips_ocr(self):
@@ -83,6 +88,28 @@ class CalibratedFingerprintTests(unittest.TestCase):
                     calibration=_calibration(),
                     prev_fingerprint=first['fingerprint'], prev_layout=first['layout'])
         self.assertTrue(second['unchanged'])
+
+    def test_quiet_input_area_below_the_message_region_does_not_trigger_ocr(self):
+        # 校准消息区是 600×600 窗口里的 top-origin y=60..510；输入区在其下方。
+        base = canvas([(300, 300, 220, 70, (.91, .91, .92))])
+        first = self._read(base)
+        changed_input = canvas([(300, 300, 220, 70, (.91, .91, .92)),
+                                (100, 520, 300, 50, (.5, .5, .5))])
+        ocr = Mock(side_effect=AssertionError('input area must not re-run OCR'))
+        second = self._read(changed_input, ocr=ocr, prev_fingerprint=first['fingerprint'],
+                            prev_layout=first['layout'])
+        self.assertTrue(second['unchanged'])
+        ocr.assert_not_called()
+
+    def test_message_area_bottom_strip_change_triggers_ocr(self):
+        # 新消息常出现在消息区最底部（y≈470..500）；这里必须算「变了」。
+        base = canvas([(300, 300, 220, 70, (.91, .91, .92))])
+        first = self._read(base)
+        changed = canvas([(300, 300, 220, 70, (.91, .91, .92)),
+                          (300, 470, 220, 30, (.5, .5, .5))])
+        second = self._read(changed, prev_fingerprint=first['fingerprint'],
+                            prev_layout=first['layout'])
+        self.assertFalse(second['unchanged'])
 
     def test_changed_calibrated_frame_still_reads(self):
         first = self._read(canvas([(300, 280, 220, 70, (.91, .91, .92))]))

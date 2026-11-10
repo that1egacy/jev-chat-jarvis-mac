@@ -1,8 +1,9 @@
 """按会话记住上次选的话术场景（#153 场景预设的会话级记忆）。
 
 隐私边界：**标题不落原文**。索引键是 `sha256(salt:app_key:title)` 的前 16 位——
-salt 每台机器随机生成一次、与索引存在同一个文件里；拿到文件也只能暴力猜标题，
-而这个文件的用途只是「同一个聊天切回同一个场景」，不值得也不应该存明文。
+salt 每台机器随机生成一次、与索引存在同一个文件里。这避免了明文泄露，但**不能抵御
+拿到文件后的字典猜测**（常见联系人群名可以被枚举），64 位截断也有极低碰撞概率；
+这个文件只用于「同一个聊天切回同一个场景」，威胁模型不要求更强保护。
 
 存储格式（`~/Library/Application Support/jev-jarvis/chat_scenes.json`，权限 600）：
 
@@ -56,7 +57,7 @@ class ChatSceneMemory:
             self._salt = secrets.token_hex(16)
             self._save()
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         payload = {"salt": self._salt, "scenes": self._scenes}
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,8 +65,9 @@ class ChatSceneMemory:
             temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             os.chmod(temp, 0o600)
             os.replace(temp, self.path)
+            return True
         except OSError:
-            pass
+            return False
 
     # ------------------------------------------------------------------ lookup
     def key_for(self, app_key: str, title: str) -> str:
@@ -86,8 +88,8 @@ class ChatSceneMemory:
         self._scenes[key] = scene_key
         while len(self._scenes) > MAX_ENTRIES:
             self._scenes.pop(next(iter(self._scenes)))
-        self._save()
-        return True
+        # 写失败要如实返回：磁盘满/目录只读时，不能让界面以为「已记住」。
+        return self._save()
 
     def forget(self, app_key: str, title: str) -> bool:
         if not title:

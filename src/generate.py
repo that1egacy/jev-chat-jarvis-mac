@@ -135,6 +135,24 @@ class RequestTimeout(Exception):
     """
 
 
+def _stream_socket(response):
+    """http.client 响应背后的 socket；拿不到就 None（尽力而为，不改变行为）。"""
+    try:
+        return response.fp.raw._sock
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def _cap_socket(sock, deadline: float) -> None:
+    """把这次 read 的超时压到剩余总时间，别让阻塞读无视总 deadline。"""
+    if sock is None:
+        return
+    try:
+        sock.settimeout(max(0.25, deadline - time.monotonic()))
+    except (OSError, ValueError):
+        pass
+
+
 def _deadline_setting() -> float:
     """JEV_GENERATE_DEADLINE 覆盖默认值；非法值退回默认，不让一个手滑的 env 卡死生成。"""
     raw = userconfig.get("JEV_GENERATE_DEADLINE")
@@ -230,7 +248,10 @@ def _clean_candidates(texts, suspects=(), her_recent=(), limit=3, seen=None) -> 
         if _STOCK.search(candidate):
             continue
         if not _LAUGH.match(candidate):
-            if any(key in suspect for suspect in suspects_norm):
+            # 只丢「完整句」重合：两三个字的正常短回复（收到/好的/明天见）可能恰好
+            # 是疑似注入句的一部分，不能因此被删。
+            if any(key == suspect or (len(key) >= 4 and key in suspect)
+                   for suspect in suspects_norm):
                 continue
             if key in recent_norm:
                 continue
@@ -615,7 +636,8 @@ class Generator:
                     "messages": [{"role": "user", "content": prompt}]}
             headers = {"content-type": "application/json", "x-api-key": key,
                        "anthropic-version": "2023-06-01"}
-            data = self._post(url, headers, body)
+            data = self._post(url, headers, body,
+                             timeout=min(self.timeout, self.deadline_s))
             parts = data.get("content") or []
             raw = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
             if not raw.strip():
@@ -634,7 +656,8 @@ class Generator:
         headers = {"content-type": "application/json", "authorization": f"Bearer {key}"}
         if on_delta is not None:
             return self._stream_openai(url, headers, body, model, alt, on_delta)
-        data = self._post(url, headers, body)
+        data = self._post(url, headers, body,
+                         timeout=min(self.timeout, self.deadline_s))
         return self._openai_json(data, model, alt)
 
     @staticmethod
@@ -670,43 +693,61 @@ class Generator:
         content: list[str] = []
         reasoning: list[str] = []
         deadline = time.monotonic() + self.deadline_s
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+        try:
+            response = urllib.request.urlopen(
+                req, timeout=max(0.5, min(self.timeout, self.deadline_s)))
+        except TimeoutError as exc:
+            raise RequestTimeout(f"生成超时（{self.deadline_s:.0f} 秒）") from exc
+        with response as r:
+            sock = _stream_socket(r)
+            _cap_socket(sock, deadline)
             ctype = (r.headers.get("content-type") or "").lower()
             if "event-stream" not in ctype:
                 # the gateway took `stream: true` but answered with one JSON document:
                 # parse it the ordinary way instead of failing
-                return self._openai_json(json.load(r), model, alt)
-            for raw_line in r:
-                if time.monotonic() > deadline:
-                    raise RequestTimeout(f"生成超时（{self.deadline_s:.0f} 秒）")
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line.startswith("data:"):
-                    continue        # blank separators, "event:" lines, ": keep-alive"
-                payload = line[len("data:"):].strip()
-                if payload == "[DONE]":
-                    break
                 try:
-                    evt = json.loads(payload)
-                except ValueError:
-                    continue        # a malformed keepalive must not kill the stream
-                for ch in evt.get("choices") or []:
-                    delta = ch.get("delta") or {}
-                    frag = delta.get("content") or ""
-                    if frag:
-                        content.append(frag)
-                        on_delta(frag)
-                    for field in ("reasoning_content", "reasoning"):
-                        v = delta.get(field)
-                        if isinstance(v, str) and v:
-                            reasoning.append(v)
+                    return self._openai_json(json.load(r), model, alt)
+                except TimeoutError as exc:
+                    raise RequestTimeout(
+                        f"生成超时（{self.deadline_s:.0f} 秒）") from exc
+            try:
+                for raw_line in r:
+                    _cap_socket(sock, deadline)
+                    if time.monotonic() > deadline:
+                        raise RequestTimeout(f"生成超时（{self.deadline_s:.0f} 秒）")
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue        # blank separators, "event:" lines, ": keep-alive"
+                    payload = line[len("data:"):].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        evt = json.loads(payload)
+                    except ValueError:
+                        continue        # a malformed keepalive must not kill the stream
+                    for ch in evt.get("choices") or []:
+                        delta = ch.get("delta") or {}
+                        frag = delta.get("content") or ""
+                        if frag:
+                            content.append(frag)
+                            on_delta(frag)
+                        for field in ("reasoning_content", "reasoning"):
+                            v = delta.get(field)
+                            if isinstance(v, str) and v:
+                                reasoning.append(v)
+            except TimeoutError as exc:
+                raise RequestTimeout(
+                    f"生成超时（{self.deadline_s:.0f} 秒）") from exc
         raw = "".join(content)
         if not raw.strip() and "".join(reasoning).strip():
             raise ThinkingOnlyError(THINKING_ONLY_HINT.format(model=model, alt=alt))
         return raw
 
-    def _post(self, url: str, headers: dict, body: dict) -> dict:
+    def _post(self, url: str, headers: dict, body: dict,
+              timeout: float | None = None) -> dict:
         self._last_url = url
-        return http_post_json(url, headers, body, self.timeout)
+        return http_post_json(url, headers, body,
+                              self.timeout if timeout is None else timeout)
 
     @staticmethod
     def _parse(raw: str) -> list[str]:
@@ -776,6 +817,11 @@ class Generator:
             return [], "生成超时，请重试或换一个更快的模型"
         except urllib.error.HTTPError as e:
             return [], f"HTTP {e.code}：请检查模型服务设置"
+        except urllib.error.URLError as e:
+            reason = getattr(e, "reason", e)
+            if isinstance(reason, TimeoutError):
+                return [], "生成超时，请重试或换一个更快的模型"
+            return [], f"网络错误：{type(reason).__name__}，请检查模型服务地址"
         except Exception as e:
             return [], type(e).__name__
         # 权威解析（不带流式那份去重状态，否则流过的行会被当成重复而丢掉）

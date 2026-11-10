@@ -981,7 +981,8 @@ class HudController(NSObject):
             return
         if not key or key not in modes.MODES or key == modes.active_key():
             return
-        _log(f"会话记忆 · 「{title}」切回场景 {modes.MODES[key]['name']}")
+        # 日志不带会话标题/联系人：记忆本身只存哈希，日志也不能把明文补回来
+        _log(f"会话记忆 · 切回场景 {modes.MODES[key]['name']}")
         self.apply_scene(key, remember=False)
 
     @objc.python_method
@@ -2108,6 +2109,7 @@ class HudController(NSObject):
                 self._prejudge_req = self._prejudge_result = None
                 self._pregen_req = self._pregen_result = None
                 self._gen_epoch += 1
+
                 self._fingerprint = None
                 self._last_full = None
                 self._win_wid = None
@@ -2325,6 +2327,7 @@ class HudController(NSObject):
                 self._pregen_req = self._pregen_result = None
                 self._gen_epoch += 1
 
+
             # 检测框已在 observe/上下文之前推送过（见上方注释）：一轮读屏只画一次，
             # 未变化帧沿用缓存的 messages，安静时框也留在屏上。
             if newest is None:
@@ -2332,6 +2335,13 @@ class HudController(NSObject):
                            if res.get("input_unresolved") else None)
                 return
             now = time.time()
+
+            # 会话身份变了才清滚动游标：reply key 含消息文本，不能拿它判断换会话。
+            session = (app.key, res.get("chat_title") or "")
+            if session != getattr(self, "_session_key", None):
+                self._session_key = session
+                self._arrival_text = None
+                self._scroll_skip_text = None
 
             # --- anti-flood: track arrivals, never analyze mid-burst
             if reply_text != self.last_seen:
@@ -2566,7 +2576,9 @@ class HudController(NSObject):
         hundred ms — still cheaper than a fresh call, and free of a second TLS handshake).
         """
         t0 = time.perf_counter()
-        deadline = time.time() + 30   # generation's own timeout; never wait longer
+        # 与生成层的总截止时间对齐（可配 5–120s），不再硬编码 30s
+        budget = getattr(self.generator, "deadline_s", 30)
+        deadline = time.time() + (budget if isinstance(budget, (int, float)) else 30)
         while time.time() < deadline:
             if not self._reply_current():
                 return None, (time.perf_counter() - t0) * 1000

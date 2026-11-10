@@ -1,4 +1,8 @@
 """生成总超时、滚动历史门、内置明文中转开关、适配器健康文案。"""
+import http.server
+import socketserver
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -55,6 +59,49 @@ class DeadlineTests(unittest.TestCase):
         self.assertIn('重试', error)
 
 
+class _SilentHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def do_POST(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Transfer-Encoding', 'chunked')
+        self.end_headers()
+        chunk = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n'
+        try:
+            self.wfile.write(b'%x\r\n' % len(chunk) + chunk + b'\r\n')
+            self.wfile.flush()
+            time.sleep(5)      # 握手成功后静默：没有换行、也没有更多字节
+        except OSError:
+            pass
+
+    def log_message(self, *args):
+        pass
+
+
+class _SilentServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+class BlockingReadDeadlineTests(unittest.TestCase):
+    def setUp(self):
+        self.server = _SilentServer(('127.0.0.1', 0), _SilentHandler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.url = f'http://127.0.0.1:{self.server.server_address[1]}/v1/chat/completions'
+
+    def test_total_deadline_interrupts_a_silent_stream(self):
+        gen = generate.Generator(timeout=30)
+        gen.deadline_s = 0.6
+        started = time.monotonic()
+        with self.assertRaises(generate.RequestTimeout):
+            gen._stream_openai(self.url, {'content-type': 'application/json'},
+                               {'model': 'm'}, 'm', 'alt', lambda frag: None)
+        self.assertLess(time.monotonic() - started, 3.0)   # 远小于 socket timeout(30)
+
+
 class ScrollGateTests(unittest.TestCase):
     @staticmethod
     def _history(*texts):
@@ -71,10 +118,10 @@ class ScrollGateTests(unittest.TestCase):
         self.assertFalse(chat_context.scrolled_back(self._history('一', '二'), '二', '合并\n文本'))
         self.assertFalse(chat_context.scrolled_back([], '一', '二'))
 
-    def test_repeated_text_uses_its_last_position(self):
+    def test_repeated_text_is_ambiguous_and_never_skips(self):
+        # 同一句话出现两次时无法确定画面是哪一次 —— 宁可多分析一次
         history = self._history('好', '一', '好', '二')
-        # 两条「好」都取最后一次出现的位置（索引 2），所以「二」->「好」是往回翻
-        self.assertTrue(chat_context.scrolled_back(history, '二', '好'))
+        self.assertFalse(chat_context.scrolled_back(history, '二', '好'))
 
 
 class BuiltinSwitchTests(unittest.TestCase):

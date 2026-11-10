@@ -96,6 +96,9 @@ class HudSceneMemoryTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
+        # 单元测试不写真实日志文件
+        self.addCleanup(patch.object(hud, '_log').stop)
+        patch.object(hud, '_log').start()
         self.memory = ChatSceneMemory(Path(self.dir.name) / 'scene.json')
         self.app = SimpleNamespace(key='wechat')
         modes.set_active('im')
@@ -125,6 +128,19 @@ class HudSceneMemoryTests(unittest.TestCase):
         stub._set_foreground_state = lambda *a, **k: None
         hud.HudController.apply_scene(stub, 'work')
         self.assertEqual(self.memory.recall('wechat', '老板'), 'work')
+
+    def test_restore_log_never_contains_the_chat_title(self):
+        self.memory.remember('wechat', '老板', 'work')
+        stub = _StubHud(self.app, '老板', self.memory)
+        logged = []
+        with patch.object(hud, '_log', side_effect=logged.append):
+            hud.HudController._restore_chat_scene(stub, '老板')
+        self.assertTrue(logged)
+        self.assertNotIn('老板', ' '.join(logged))
+
+    def test_remember_reports_a_failed_save(self):
+        with patch.object(ChatSceneMemory, '_save', return_value=False):
+            self.assertFalse(self.memory.remember('wechat', '老板', 'work'))
 
     def test_restore_does_not_rewrite_memory(self):
         self.memory.remember('wechat', '老板', 'work')
