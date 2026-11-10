@@ -1,6 +1,9 @@
 """Local conversation data and one bounded model input shared by every reply path."""
 from __future__ import annotations
 
+import difflib
+import re
+
 CONTEXT_CHARS = 8192
 
 # 连续消息归组（#148）：同侧、纵向相邻、中间没有对方/我方插入的消息视为一个「回复片段组」。
@@ -34,6 +37,45 @@ def reply_group(messages, index: int, gap: float = GROUP_GAP,
     if len(merged) > GROUP_CHARS:
         merged = merged[-GROUP_CHARS:]
     return merged, start
+
+
+def _similar_text(old: str, new: str) -> bool:
+    """OCR 抖动容错：同一句话只错一两个字时仍算同一条。
+
+    精确相等最可靠；短句（<3 字）不做模糊匹配——「好」「嗯」之间的差异是信息不是噪声。
+    """
+    old, new = old or "", new or ""
+    if old == new:
+        return True
+    # 短句不做模糊：「嗯」「好」「收到」之间差一个字就是不同的话。
+    if min(len(old), len(new)) < 4:
+        return False
+    # 数字是信息不是噪声：序号/时间/金额差一位就是另一条消息（「项086」「片段10」）。
+    if re.findall(r"\d+", old) != re.findall(r"\d+", new):
+        return False
+    # 等长且只差一个字（位移/形近字抖动）：典型 OCR 噪声。
+    if len(old) == len(new) and sum(1 for a, b in zip(old, new) if a != b) == 1:
+        return True
+    # 更长才用相似度：短字符串的比例对增删一个字过于敏感。
+    if min(len(old), len(new)) >= 6:
+        return difflib.SequenceMatcher(None, old, new).ratio() >= .75
+    return False
+
+
+def _same_records(left, right) -> bool:
+    """两条记录序列是否指向同一批消息。
+
+    只有正文字段允许 OCR 抖动；方向、发言人、引用/拆分元数据必须精确相等——引用变了
+    就是另一条待回复消息，不能被相似度吞掉。
+    """
+    if len(left) != len(right):
+        return False
+    for a, b in zip(left, right):
+        if a[1] != b[1] or tuple(a[2:]) != tuple(b[2:]):
+            return False
+        if not _similar_text(a[0], b[0]):
+            return False
+    return True
 
 
 def message_record(message):
@@ -216,9 +258,10 @@ class Conversations:
             return visible, 0
         old = self.history(title)
         breaks = sorted(set(self.data.get(title, {}).get('breaks', [])))
-        if record and previous and previous != visible and len(previous) == len(visible):
+        if (record and previous and not _same_records(previous, visible)
+                and len(previous) == len(visible)):
             matches = [i for i in range(len(old)-len(previous)+1)
-                       if old[i:i+len(previous)] == previous
+                       if _same_records(old[i:i+len(previous)], previous)
                        and not any(i < boundary < i+len(previous) for boundary in breaks)]
             if len(matches) == 1:
                 start = matches[0]
@@ -227,7 +270,7 @@ class Conversations:
                 self._save(dict(self.data, **{title: chat}))
                 old = updated
         matches = [i for i in range(len(old) - len(visible) + 1)
-                   if old[i:i + len(visible)] == visible
+                   if _same_records(old[i:i + len(visible)], visible)
                    and not any(i < boundary < i + len(visible) for boundary in breaks)]
         if matches:
             if record:
@@ -240,14 +283,14 @@ class Conversations:
         segment_start = breaks[-1] if breaks else 0
         tail = old[segment_start:]
         overlap = next((n for n in range(min(len(tail), len(visible)), 0, -1)
-                        if tail[-n:] == visible[:n]), 0)
+                        if _same_records(tail[-n:], visible[:n])), 0)
         if old and not overlap:
             # A gap is not evidence of chronology. Wait for a subsequent advancing
             # frame, then retain it as a separate observation segment, never model
             # context spanning the unknown gap. No anchor can survive an explicit clear.
             anchor = self._anchors.get(title, [])
             overlap = next((n for n in range(min(len(anchor), len(visible)), 0, -1)
-                            if anchor[-n:] == visible[:n]), 0)
+                            if _same_records(anchor[-n:], visible[:n])), 0)
             if not record or not overlap or overlap == len(visible):
                 if record:
                     self._anchors[title] = visible

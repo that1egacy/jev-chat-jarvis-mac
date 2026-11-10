@@ -442,7 +442,7 @@ def warm_ocr() -> float:
 _FP_W, _FP_H = 128, 224
 
 
-def _fingerprint(image, input_top=None) -> bytes | None:
+def _fingerprint(image, input_top=None, region=None) -> bytes | None:
     """The chat pane (title band down to just above the input box) as a small grayscale
     thumbnail; None when anything in the pipeline refuses.
 
@@ -460,11 +460,19 @@ def _fingerprint(image, input_top=None) -> bytes | None:
         # Layout constants here are bottom-origin (Vision's convention); CGImage cropping
         # is top-origin, so the band "input-area top edge .. window top" becomes
         # y=0 .. (1 - INPUT_AREA_Y_MIN) from the top.
-        crop = Quartz.CGImageCreateWithImageInRect(
-            image,
-            Quartz.CGRectMake(int(CHAT_PANE_X_MIN * w), 0,
-                              int((1.0 - CHAT_PANE_X_MIN) * w),
-                              int((1.0 - INPUT_AREA_Y_MIN if input_top is None else input_top) * h)))
+        if region is None:
+            crop = Quartz.CGImageCreateWithImageInRect(
+                image,
+                Quartz.CGRectMake(int(CHAT_PANE_X_MIN * w), 0,
+                                  int((1.0 - CHAT_PANE_X_MIN) * w),
+                                  int((1.0 - INPUT_AREA_Y_MIN if input_top is None else input_top) * h)))
+        else:
+            # 手动校准路径：区域由用户框定，底原点（同 Calibration.rect()）。
+            rx, ry, rw, rh = region
+            crop = Quartz.CGImageCreateWithImageInRect(
+                image,
+                Quartz.CGRectMake(int(rx * w), int((1.0 - ry - rh) * h),
+                                  max(1, int(rw * w)), max(1, int(rh * h))))
         cs = Quartz.CGColorSpaceCreateDeviceGray()
         buf = ctypes.create_string_buffer(_FP_W * _FP_H)
         ctx = Quartz.CGBitmapContextCreate(
@@ -668,17 +676,32 @@ def looks_like_sender_name(msg: Message, following: Message | None) -> bool:
 # ---------------------------------------------------------------------- public API
 
 
-def read_calibrated(image, calibration, window, max_messages=12, capture_ms=0.0):
+def read_calibrated(image, calibration, window, max_messages=12, capture_ms=0.0,
+                    prev_fingerprint=None, prev_layout=None):
     """Explicit selected region. Never infer a fill target from a message selection.
 
     capture_ms: time read_conversation already spent finding the window and capturing
     before handing us the pixels. Timing is reported from the caller's t0, same
     caliber as the plain path — without it this branch reported capture=0 and the
     real capture cost vanished from the read log (#110).
+
+    Fingerprint short-circuit: this branch used to re-OCR the message region *and* the
+    header every tick even when the pixels had not moved (two Vision passes). Compare
+    a thumbnail of the same calibrated band first — title band included, input box
+    excluded — and return "unchanged" exactly like the automatic path does.
     """
     from calibrated_messages import extract, recover_numeric_bubbles
     t0 = time.perf_counter()
     x,y,w,h = calibration.rect()
+    layout = (window['wid'], window['w'], window['h'], calibration.serialize())
+    fingerprint = _fingerprint(image, region=(x, y, w, 1.0 - y))
+    if layout == prev_layout and _same_frame(fingerprint, prev_fingerprint):
+        total = (time.perf_counter() - t0) * 1000
+        return {"ok": True, "unchanged": True, "messages": [], "fingerprint": fingerprint,
+                "chat_title": "", "window": window, "n_blocks": 0, "layout": layout,
+                "input_rect": None, "manual_calibration": True,
+                "timing_ms": {"capture": capture_ms, "ocr": 0.0, "total": capture_ms + total,
+                              "capture_path": "manual"}}
     blocks = ocr_image(image, region=(x,1-y-h,w,h))
     header = ocr_image(image, region=(x,1-y,w,y))
     candidates = [b for b in header if not _is_noise(b) and b.x < x+w*.75]
@@ -694,8 +717,8 @@ def read_calibrated(image, calibration, window, max_messages=12, capture_ms=0.0)
     t_end = time.perf_counter()
     elapsed = (t_end-t0)*1000
     return {"ok": True, "unchanged": False, "window": window, "messages": msgs,
-            "chat_title": title, "n_blocks": len(blocks), "fingerprint": None,
-            "layout": (window['wid'],window['w'],window['h'],calibration.serialize()),
+            "chat_title": title, "n_blocks": len(blocks), "fingerprint": fingerprint,
+            "layout": layout,
             "input_rect": None, "manual_calibration": True,
             "timing_ms": {"capture":capture_ms, "ocr":(t_ocr-t0)*1000,
                           "recover":(t_recover-t_ocr)*1000,
@@ -741,7 +764,8 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
                     "calibration_error": "窗口尺寸已改变，请重新校准消息区域。"}
         capture_ms = (time.perf_counter() - t0) * 1000
         return read_calibrated(image, calibration, window, max_messages,
-                               capture_ms=capture_ms)
+                               capture_ms=capture_ms,
+                               prev_fingerprint=prev_fingerprint, prev_layout=prev_layout)
     from input_region import input_outline
     try:
         outline = input_outline(image) if image is not None else None

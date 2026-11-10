@@ -23,6 +23,16 @@ def pixels(image):
     return data[:, :, :3]
 
 
+def own_bubble(color) -> bool:
+    """微信自己的绿气泡（#95EC69 量级）：绿通道显著高于红/蓝。
+
+    只当第二证据用：几何判出 me 时确认；几何判不出时补 me；几何判成 them 时说明
+    两者矛盾，返回 unknown 而不是硬猜。
+    """
+    r, g, b = (int(v) for v in color[:3])
+    return g > r + 40 and g > b + 40
+
+
 def component(mask, sx, sy, limit):
     """Scanline flood fill: bound work for background and avoid per-pixel Python loops.
 
@@ -251,6 +261,9 @@ def extract(image, blocks, rect, max_messages=12):
         right_match = any(abs(r-a)<tolerance for a in anchors['me'])
         if left_match != right_match:
             side = 'them' if left_match else 'me'
+        # 气泡底色是第二证据：绿气泡只可能是自己发的；与几何冲突时交给 unknown。
+        if own_bubble(color):
+            side = 'unknown' if side == 'them' else 'me'
         quote_blocks, body_blocks = [], []
         mixed = False
         for b in members:
