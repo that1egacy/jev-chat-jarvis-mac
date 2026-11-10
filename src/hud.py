@@ -1563,7 +1563,8 @@ class HudController(NSObject):
             context = getattr(self._reply_worker, "context", self._active_context)
             gen = self.generator.generate(chat_context.model_message(text, context), intent, slot_tones,
                                           context,
-                                          self._stream_hook(t0, "换话术"))
+                                          self._stream_hook(t0, "换话术"),
+                                          her_recent=[r[0] for r in (self._observed_messages or []) if len(r) > 1 and r[1] == "them"][-5:])
             groups = gen.get("groups") or []
             failed = [str(g["slot"]) for g in groups if g.get("error")]
             _log(f"换话术 生成 {gen.get('elapsed_s', 0) * 1000:.0f}ms · {len(groups)} 个话术"
@@ -1592,7 +1593,8 @@ class HudController(NSObject):
             if not self._reply_current():
                 return
             context = getattr(self._reply_worker, "context", self._active_context)
-            gen = self.generator.generate(chat_context.model_message(text, context), intent, slot_tones, context)
+            gen = self.generator.generate(chat_context.model_message(text, context), intent, slot_tones, context,
+                                          her_recent=[r[0] for r in (self._observed_messages or []) if len(r) > 1 and r[1] == "them"][-5:])
             payload = self._payload_from_gen(gen)
             if payload is None:
                 err = "服务未返回可用候选，请检查模型设置"
@@ -2402,7 +2404,8 @@ class HudController(NSObject):
                 self._pregen_running = True
                 gen = None
                 try:
-                    gen = self.generator.generate(chat_context.model_message(text, context), "", list(tones), context)
+                    gen = self.generator.generate(chat_context.model_message(text, context), "", list(tones), context,
+                                                  her_recent=[r[0] for r in (self._observed_messages or []) if len(r) > 1 and r[1] == "them"][-5:])
                 except Exception:
                     gen = None        # a failed early run just means the settle path regenerates
                 # store BEFORE clearing _pregen_running, so _take_pregen never observes
@@ -2454,7 +2457,8 @@ class HudController(NSObject):
         if not self._reply_current():
             return {"groups": []}
         if gen is None:
-            gen = self.generator.generate(chat_context.model_message(text, context), "", list(tones), context, on_candidate)
+            gen = self.generator.generate(chat_context.model_message(text, context), "", list(tones), context,
+                                          on_candidate, her_recent=[r[0] for r in (self._observed_messages or []) if len(r) > 1 and r[1] == "them"][-5:])
         return gen
 
     @objc.python_method
@@ -2480,7 +2484,7 @@ class HudController(NSObject):
             note = f"（早跑命中，停稳后仅等 {wait_ms:.0f}ms）" if gen is not None else ""
             if gen is None:
                 gen = self.generator.generate(chat_context.model_message(text, context), "", list(self.slot_tones),
-                                              context, self._stream_hook(t0))
+                                              context, self._stream_hook(t0), her_recent=[r[0] for r in (self._observed_messages or []) if len(r) > 1 and r[1] == "them"][-5:])
             self._finish_generate(gen, newest, t0, verdict, note, text)
         except Exception as e:
             _log(f"生成失败 {type(e).__name__}")

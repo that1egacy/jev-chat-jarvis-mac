@@ -105,22 +105,27 @@ class JevJudge:
         """Rank reply candidates — just another `choice` question with the texts as options."""
         if not candidates:
             return []
+        # 重复文本只送一份：用文本做 criteria 的 key 时，两条一字不差会被 dict 静默合并，
+        # 概率再按文本取回就错位了（模型确实会给出同句换词的两条）。
+        unique = list(dict.fromkeys(candidates))
         payload = {
             "model": self.model,
             "state": f"{context + chr(10) if context else ''}收到的消息：{message}\n判断出的意图：{intent}",
             "questions": {"best": {"type": "choice",
                                    "instructions": "哪一条回复最合适？",
-                                   "criteria": {c: None for c in candidates}}},
+                                   "criteria": {c: None for c in unique}}},
         }
         data = self._post(payload)
         ans = ((data.get("answers") or {}).get("best") or {})
         probs = ans.get("probabilities") or {}
-        ranked = []
-        for c in candidates:
+        scored = {}
+        for c in unique:
             p = probs.get(c)
             if p is None:                      # gateway may echo the chosen label only
                 p = ans.get("confidence", 0.0) if ans.get("choice") == c else 0.0
-            ranked.append({"text": c, "prob": float(p)})
+            scored[c] = float(p)
+        # 重复候选共用同一概率，数量不丢
+        ranked = [{"text": c, "prob": scored[c]} for c in candidates]
         ranked.sort(key=lambda r: -r["prob"])
         return ranked
 
