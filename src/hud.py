@@ -906,6 +906,18 @@ class HudController(NSObject):
             action_menu.addItem_(item)
         self.pause_item.setTarget_(self)
         action_menu.insertItem_atIndex_(self.pause_item, 0)
+        # 只给风险（群聊场景可手动开）：判断完只给风险与建议，不生成候选
+        try:
+            import reply_policy
+            self._risk_only = reply_policy.risk_only_default()
+        except Exception:                                  # noqa: BLE001
+            self._risk_only = False
+        self.risk_only_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "只给风险（不生成候选）", "toggleRiskOnly:", "")
+        self.risk_only_item.setTarget_(self)
+        self.risk_only_item.setState_(
+            AppKit.NSOnState if self._risk_only else AppKit.NSOffState)
+        action_menu.addItem_(self.risk_only_item)
         menu.addItem_(action_parent)
 
         # 5) 区域校准（二级菜单）
@@ -947,6 +959,14 @@ class HudController(NSObject):
         self.slot_tones = tones
         for slot, dropdown in enumerate(getattr(self, "_dds", [])):
             dropdown.selectItemWithTitle_(self.slot_tones[slot])
+
+    def toggleRiskOnly_(self, sender):
+        """菜单开关：这一轮起只给风险与建议，不生成候选（再点一次恢复）。"""
+        self._risk_only = not getattr(self, "_risk_only", False)
+        if hasattr(self, "risk_only_item"):
+            self.risk_only_item.setState_(
+                AppKit.NSOnState if self._risk_only else AppKit.NSOffState)
+        _log(f"只给风险 · {'开' if self._risk_only else '关'}")
 
     def sceneChanged_(self, sender):
         """菜单切换场景。"""
@@ -1059,6 +1079,15 @@ class HudController(NSObject):
         except Exception as exc:                          # noqa: BLE001
             _log(f"草稿自查异常 {type(exc).__name__}")
             self._push("applyDraftCheck:", f"草稿自查失败：{type(exc).__name__}")
+
+    def applyRiskHold_(self, summary):
+        """策略判定「只给风险」：清掉候选，只保留判断与建议。"""
+        if self._collapsed:
+            self._set_collapsed(False)
+        self._show(automatic=True)
+        self._clear_candidates()
+        self._stream_rows = {}
+        self._render("status", summary or "风险偏高：只给建议，不生成候选", PALETTE["amber"])
 
     def applyDraftCheck_(self, summary):
         if self._collapsed:
@@ -2652,6 +2681,13 @@ class HudController(NSObject):
         try:
             if not self._reply_current():
                 return
+            import reply_policy
+            risk_only = getattr(self, "_risk_only", reply_policy.risk_only_default())
+            if reply_policy.decide(verdict, risk_only=risk_only) == "hold":
+                _log("策略 · 只给风险，跳过生成")
+                self._push("applyRiskHold:",
+                           reply_policy.status_line("hold", verdict, risk_only=risk_only))
+                return
             text = newest.text if reply_text is None else reply_text
             context = self._context_text(msgs, newest, text, group_start)
             gen, wait_ms = self._take_pregen(text, tuple(self.slot_tones))
@@ -2811,6 +2847,18 @@ class HudController(NSObject):
             except Exception as e:
                 _log(f"判断失败 {type(e).__name__}")
                 self._push("applyError:", f"判断失败: {type(e).__name__}")
+
+            # 判断先于候选上屏：这里决定这一轮到底该不该给候选（hold 只给风险）。
+            if verdict is not None:
+                import reply_policy
+                risk_only = getattr(self, "_risk_only", reply_policy.risk_only_default())
+                state = reply_policy.decide(verdict, risk_only=risk_only)
+                if state == "hold":
+                    gen_future.cancel()
+                    _log(f"策略 · 只给风险（{verdict.get('risk', '?')}），丢弃本轮候选")
+                    self._push("applyRiskHold:",
+                               reply_policy.status_line(state, verdict, risk_only=risk_only))
+                    return
 
             try:
                 gen = gen_future.result()
