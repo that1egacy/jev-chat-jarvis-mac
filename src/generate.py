@@ -21,6 +21,7 @@ leaves the machine — swap in a local model if that matters more than reply qua
 from __future__ import annotations
 
 import concurrent.futures
+import difflib
 import http.client
 import io
 import json
@@ -255,11 +256,40 @@ def _clean_candidates(texts, suspects=(), her_recent=(), limit=3, seen=None) -> 
                 continue
             if key in recent_norm:
                 continue
+        if _too_similar(key, list(seen)):
+            continue
         seen.add(key)
         out.append(candidate)
         if len(out) >= limit:
             break
     return out
+
+
+_HIGH_INFO_CHARS = set("不没别未勿今明昨早晚上午下午点分号周星期") | set("零一二三四五六七八九十百千万两半")
+
+
+def _too_similar(normalized: str, kept) -> bool:
+    """组内近似重复：长度 ≥8 且相似度 ≥0.9，且没有语义敏感字符差异。
+
+    短回复不参与比较；数字、时间词、否定词差一点就是另一句话
+    （「明天下午两点」vs「明天下午三点」），不能当重复丢掉。
+    """
+    if len(normalized) < 8:
+        return False
+    return any(len(other) >= 8 and _near_duplicate(normalized, other) for other in kept)
+
+
+def _near_duplicate(a: str, b: str) -> bool:
+    if re.findall(r"\d+", a) != re.findall(r"\d+", b):
+        return False
+    if len(a) == len(b):
+        changed = {x for x, y in zip(a, b) if x != y}
+    else:
+        from collections import Counter
+        changed = set((Counter(a) - Counter(b)) | (Counter(b) - Counter(a)))
+    if changed & _HIGH_INFO_CHARS:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= .9
 
 
 def _language_line(message: str) -> str:

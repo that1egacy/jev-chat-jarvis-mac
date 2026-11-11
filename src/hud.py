@@ -1512,6 +1512,20 @@ class HudController(NSObject):
         text = self.cand_texts[idx] if 0 <= idx < len(self.cand_texts) else None
         if not text:
             return
+        # ChatDiff（借鉴 Android）: 候选是针对 analyzed_text 生成的；如果之后对方又发了
+        # 新消息，直接填进去可能答非所问。第一次点击只提示，第二次才写。
+        if (self.analyzed_text and self.last_seen
+                and self.last_seen != self.analyzed_text):
+            pending = getattr(self, "_fill_pending", None)
+            if not (pending and pending[0] == idx and pending[1] == text
+                    and time.time() - pending[2] < 10):
+                self._fill_pending = (idx, text, time.time())
+                self._render("status",
+                             "对方有新消息了：候选基于更早的消息，再点一次仍要填入",
+                             PALETTE["amber"])
+                _log("填入确认 · 聊天在新消息后变化，要求二次点击")
+                return
+        self._fill_pending = None
         # The status line is painted before the call because writing into the chat app
         # takes a beat; the click should look instant even though the write has not
         # happened yet.

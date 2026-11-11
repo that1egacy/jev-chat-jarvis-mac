@@ -404,9 +404,30 @@ def capture_image(wid: int, nominal: bool = True):
         return None
 
 
-def ocr_image(image, languages=("zh-Hans",), chat_only: bool = True, input_top=None, region=None) -> list[TextBlock]:
+DEFAULT_OCR_LANGUAGES = ("zh-Hans",)
+
+
+def ocr_languages() -> tuple[str, ...]:
+    """`JEV_OCR_LANGS`：Vision 识别语言（逗号分隔，如 `zh-Hans,en-US`）。
+
+    默认只留 zh-Hans：多加 en-US 逐块一致但实测慢约 30%（见 AGENTS）。需要读英文
+    WhatsApp / 邮件时再显式开；非法或空白退回默认，不让一个手滑的 env 拖垮读屏。
+    """
+    try:
+        import userconfig
+        raw = userconfig.get("JEV_OCR_LANGS")
+    except Exception:                                    # noqa: BLE001
+        raw = None
+    if not raw:
+        return DEFAULT_OCR_LANGUAGES
+    langs = tuple(part.strip() for part in str(raw).split(",") if part.strip())
+    return langs or DEFAULT_OCR_LANGUAGES
+
+
+def ocr_image(image, languages=None, chat_only: bool = True, input_top=None, region=None) -> list[TextBlock]:
     """Same tuned Vision request, fed a CGImage directly — no PNG encode, no temp file."""
     import Vision
+    languages = languages or ocr_languages()
     handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(image, None)
     return _vision_blocks(handler, languages, chat_only, input_top, region)
 
