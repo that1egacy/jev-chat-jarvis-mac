@@ -79,6 +79,24 @@ class FillChatDiffTests(unittest.TestCase):
         self.h.fillCandidate_(self._sender())
         fixtures.HUD['FAKE_APP'].fill_text.assert_called_once()
 
+    def test_risky_candidate_requires_a_second_click(self):
+        self.h.analyzed_text = '这个方案你看下'
+        self.h.last_seen = '这个方案你看下'
+        self.h.cand_texts = ['放心，包在我身上']
+        self.h.fillCandidate_(self._sender())
+        fixtures.HUD['FAKE_APP'].fill_text.assert_not_called()
+        self.assertIn('未授权承诺', str(self.h._render.call_args))
+        self.h.fillCandidate_(self._sender())
+        fixtures.HUD['FAKE_APP'].fill_text.assert_called_once()
+
+    def test_candidate_guard_can_be_turned_off(self):
+        self.h.analyzed_text = '这个方案你看下'
+        self.h.last_seen = '这个方案你看下'
+        self.h.cand_texts = ['放心，包在我身上']
+        with patch('userconfig.get', return_value='0'):
+            self.h.fillCandidate_(self._sender())
+        fixtures.HUD['FAKE_APP'].fill_text.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

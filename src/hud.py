@@ -1512,18 +1512,31 @@ class HudController(NSObject):
         text = self.cand_texts[idx] if 0 <= idx < len(self.cand_texts) else None
         if not text:
             return
-        # ChatDiff（借鉴 Android）: 候选是针对 analyzed_text 生成的；如果之后对方又发了
-        # 新消息，直接填进去可能答非所问。第一次点击只提示，第二次才写。
+        # 填入前的两道闸（借鉴 Android 的 ChatDiff 与 CandidateCheck）：
+        #   1) 候选是针对 analyzed_text 生成的，之后对方又发消息 → 可能答非所问；
+        #   2) 候选新引入了未授权承诺/替人承诺/编造数字时间/越权拍板 → 先提醒。
+        # 命中只要求「再点一次」，不阻止、也不改写候选。
+        reasons = []
         if (self.analyzed_text and self.last_seen
                 and self.last_seen != self.analyzed_text):
+            reasons.append("对方有新消息了，候选基于更早的消息")
+        try:
+            import candidate_checks
+            if candidate_checks.enabled():
+                hits = candidate_checks.audit(self.analyzed_text or "", text,
+                                              self._active_context or "")
+                if hits:
+                    reasons.append("候选可能" + candidate_checks.describe(hits))
+        except Exception:                                  # noqa: BLE001
+            pass          # 检查本身出问题不能挡住填入
+        if reasons:
             pending = getattr(self, "_fill_pending", None)
             if not (pending and pending[0] == idx and pending[1] == text
                     and time.time() - pending[2] < 10):
                 self._fill_pending = (idx, text, time.time())
-                self._render("status",
-                             "对方有新消息了：候选基于更早的消息，再点一次仍要填入",
+                self._render("status", "；".join(reasons) + "：再点一次仍要填入",
                              PALETTE["amber"])
-                _log("填入确认 · 聊天在新消息后变化，要求二次点击")
+                _log("填入确认 · " + "；".join(reasons))
                 return
         self._fill_pending = None
         # The status line is painted before the call because writing into the chat app

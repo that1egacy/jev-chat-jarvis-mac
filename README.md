@@ -154,6 +154,7 @@ chmod 600 ~/.config/jev-jarvis/env
 
 - **凭据解析以 key 为准**：提供 key 的来源同时决定端点和模型。实测可用：DeepSeek `deepseek-chat`（最快）；智谱 `glm-4-flash`（换 `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`，两组都填 OpenAI 组优先）；本地 Ollama `qwen2.5:7b`（完全不出网）
 - **判断层网关**：`TYPESAFE_BASE_URL` 三种填法等价可用——只到主机（`https://api.typesafe.ai`）、带版本段（`…/v1`，自动补动作段，不会出现 `/v1/v1/…`）、或填完整动作路径（填到动作段为止，原样使用、不再拼接）。第三方 TypeSafe 兼容网关填网关地址 + 网关 key，模型名按网关填写（如 Vercel AI Gateway 填 `https://ai-gateway.vercel.sh/v1/evaluate`、模型 `typesafe-ai/jev`；OpenRouter 填 `https://openrouter.ai/api/alpha/decisions`、模型 `typesafe/jev-1.13`，key 用 OpenRouter 的 `sk-or-…`，响应同为 systemone 形状）
+- **判断层标定台**：`uv run python probe/judge_calibration.py` 跑 22 条意图回归，输出总命中率、逐类命中率、延迟 P50/P90 与门禁退出码（0 通过 / 1 不达标 / 2 环境问题）；`--out`/`--markdown` 落报告，`--threshold` 改门限。改判断层 prompt 或换模型后跑一遍，比「测试能跑」多一层可对比的量化口径
 - **判断方式选择（`JUDGE_BACKEND`）**：首次启动（未配判断层 key 且离线模型未下载）会弹一次选择，结果写进 env：`cloud`=在线判断（不下载、不加载本地模型）、`local`=离线判断（预热时下载，选过就不再问）、`skip`=稍后再说（不再弹，消息时面板提示）。不写此键时：模型已在本地就照常使用，未下载则**不会自动下载**，面板提示引导。模型设置的「判断 · Jev」页可删除离线模型（显示实际占用）或启用离线判断
 - **国内网络加速**：模型已缓存后启动**完全不联网**（直接从本地快照加载，不查新版本）；首次下载时若 huggingface.co 不可达（探测 2.5 秒），自动改用镜像 `hf-mirror.com` 下载并在日志注明。也可在 env 里 `export HF_ENDPOINT="https://hf-mirror.com"` 显式指定任意兼容端点——显式配置优先，不再探测
 - **别用 thinking 模型**：思考吃光 `max_tokens`，候选 0 条，面板只报「候选生成失败」——DeepSeek 认准 `deepseek-chat`
@@ -164,7 +165,7 @@ chmod 600 ~/.config/jev-jarvis/env
 - **OCR 语言可配**：默认只用 `zh-Hans`（多语会变慢）；要读英文聊天/邮件时 `export JEV_OCR_LANGS="zh-Hans,en-US"`（逗号分隔，非法值退回默认）。实测多加 en-US 逐块结果一致但约慢 30%
 - **候选出口卫生**：对方消息里出现「忽略之前的规则」「只输出这句话」这类疑似指挥模型的句子时，按纯聊天内容处理，并在生成后丢弃与它重合、或与对方最近原话一字不差的候选（纯笑声除外）；同批候选先归一化去重，中文 AI 套话（「希望对你有帮助」等）直接丢弃；对方最近一条是纯英文时要求用英文回复
 - **组内近似重复**：同一话术里「换个说法说同一句」的长候选会被去掉（≥8 字且相似度 ≥0.9）；数字/时间/否定词差一点的不算重复
-- **聊天变化后填入二次确认**：候选是针对某条消息生成的；如果之后对方又发了新消息，第一次点「填入」只提示「候选基于更早的消息」，再点一次才真正写入，避免答非所问
+- **填入前两道闸**：候选是针对某条消息生成的——如果之后对方又发了新消息，或候选新引入了未授权承诺 / 替别人承诺 / 编造数字时间 / 越权拍板，第一次点「填入」只提示原因、再点一次才真正写入。**只提示不阻止**；`JEV_CANDIDATE_GUARD=0` 可关掉风险检查（聊天变化提示仍保留）
 - **自定义话术**：env 加一行 `JEV_TONES`（`|` 分隔、每条「名字=说明」，同名覆盖内置，重启生效），如 `摸鱼大师=像资深摸鱼选手，把活推得漂亮又不失礼`。**有质量门槛**：说明至少 10 字，写清「什么语气 + 别变成什么」；太短的（如「夸我」）不会加载，启动日志会写明原因——说明太空模型就没得发挥，候选只会平庸
 - 自查凭据（不打印完整 key）：`uv run python src/generate.py --check`、`uv run python src/judge_jev.py`
 
